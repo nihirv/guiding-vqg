@@ -1,0 +1,7 @@
+lightning_logs
+data
+nlg_eval
+TextGenerationEvaluationMetrics
+.vscode
+__pycache__
+.git-fai
