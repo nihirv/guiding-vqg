@@ -66,7 +66,7 @@ class TrainVQG(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         if self.args.num_warmup_steps < self.iter:
             self.latent_transformer = True
-            self.model.latent_transformer = True
+            self.model.switch_latent_transformer(self.latent_transformer)
             self.configure_optimizers()  # reset the momentum
 
         loss, kld = self(batch)
@@ -129,17 +129,20 @@ class TrainVQG(pl.LightningModule):
         return torch.optim.Adam(self.parameters(), lr=self.args.lr)
 
     def decode_and_print(self, batch, print_lim=20, val=True):
-        images, image_ids, question_ids, input_ids, input_attention_masks, obj_features, obj_locations = batch["images"], batch["image_ids"], batch[
+        images, image_ids, question_ids, inference_ids, inference_attention_masks, obj_features, obj_locations = batch["images"], batch["image_ids"], batch[
             "question_ids"], batch["input_ids"], batch["input_attention_masks"], batch["rcnn_features"], batch["rcnn_locations"]
         # images, question_ids, input_ids, input_attention_masks = images.to(self.args.device), question_ids.to(
         #     self.args.device), input_ids.to(self.args.device), input_attention_masks.to(self.args.device)
 
+        if self.args.variant.split("-")[1] == "ico":
+            inference_ids, inference_attention_masks = batch["inference_ids"], batch["inference_attention_masks"]
+
         decoded_questions = [self.tokenizer.decode(to_decode) for to_decode in question_ids]
-        decoded_inputs = [self.tokenizer.decode(to_decode) for to_decode in input_ids]
+        decoded_inputs = [self.tokenizer.decode(to_decode) for to_decode in inference_ids]
 
         preds = []
         gts = []
-        decoded_sentences = self.model.decode_greedy(images, input_ids, input_attention_masks, obj_features, obj_locations)
+        decoded_sentences = self.model.decode_greedy(images, inference_ids, inference_attention_masks, obj_features, obj_locations)
         for i, sentence in enumerate(decoded_sentences):
             curr_input = self.filter_special_tokens(decoded_inputs[i])
             generated_q = self.filter_special_tokens(sentence)
@@ -184,6 +187,8 @@ class TrainVQG(pl.LightningModule):
             max_msjs[1], max_msjs[0]))
         # print("SMALLEST FBD SCORE WAS: {} FROM ITER {}".format(min_fbds[1], min_fbds[0]))
 
+        print("Model Variant:", self.args.variant)
+
         return scores
 
     def filter_special_tokens(self, decoded_sentence_string):
@@ -201,16 +206,16 @@ class TrainVQG(pl.LightningModule):
         return " ".join(filtered)
 
 
-# class MyEarlyStopping(EarlyStopping):
-#     def on_validation_end(self, trainer, pl_module):
-#         if pl_module.iter > pl_module.args.num_warmup_steps:
-#             self._run_early_stopping_check(trainer, pl_module)
+class MyEarlyStopping(EarlyStopping):
+    def on_validation_end(self, trainer, pl_module):
+        if pl_module.iter > pl_module.args.num_warmup_steps:
+            self._run_early_stopping_check(trainer, pl_module)
 
 
 early_stop_callback = EarlyStopping(
     monitor='val_Bleu_4',
     min_delta=0.00,
-    patience=15,
+    patience=10,
     verbose=True,
     mode='max'
 )
@@ -234,6 +239,7 @@ if __name__ == "__main__":
                         help="Number of transformer layers in encoder and decoder")
     parser.add_argument("--num_heads", type=int, default=8,
                         help="Number of heads in the multi-head attention")
+    parser.add_argument("--variant", type=str, default="icodqa-icodqa", help="Model variant to run.")
     parser.add_argument("--dataset", type=str,
                         default="data/processed/iq_dataset.hdf5")
     parser.add_argument("--val_dataset", type=str,
@@ -252,10 +258,13 @@ if __name__ == "__main__":
         os.getcwd(), args.val_dataset), tokenizer, args.batch_size, shuffle=True, num_workers=8)
 
     trainVQG = TrainVQG(args, tokenizer)  # .to(device)
-    trainer = pl.Trainer(max_steps=args.total_training_steps, gradient_clip_val=5,
-                         val_check_interval=250, limit_val_batches=200, callbacks=[early_stop_callback], gpus=1)
+    trainer = pl.Trainer(max_steps=args.total_training_steps, gradient_clip_val=5, gpus=1)
 
-    trainer.fit(trainVQG, data_loader, val_data_loader)
+    # trainer = pl.Trainer(max_steps=args.total_training_steps, gradient_clip_val=5,
+    #                      val_check_interval=500, limit_val_batches=350, callbacks=[early_stop_callback], gpus=1)
+
+    trainer.fit(trainVQG, data_loader)
+    # trainer.fit(trainVQG, data_loader, val_data_loader)
 
     test_data_loader = get_loader(os.path.join(
         os.getcwd(), args.val_dataset), tokenizer, args.batch_size, shuffle=False, num_workers=8)

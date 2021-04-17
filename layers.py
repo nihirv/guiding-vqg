@@ -16,12 +16,14 @@ class LatentNorm(nn.Module):
         )
 
     def forward(self, hidden_states):
-        latents = self.latent_encoder(hidden_states)
-        mu, logvar = latents[:, :, :self.args.latent_dim], latents[:, :, self.args.latent_dim:]
-        std = torch.exp(0.5*logvar)
-        eps = torch.randn_like(std)
-        z = eps.mul(std).add_(mu)
-        kld = gaussian_kld_norm(mu, logvar)
+
+        # latents = self.latent_encoder(hidden_states)
+        # mu, logvar = latents[:, :, :self.args.latent_dim], latents[:, :, self.args.latent_dim:]
+        # std = torch.exp(0.5*logvar)
+        # eps = torch.randn_like(std).to(self.args.device)
+        # z = eps.mul(std).add_(mu)
+        # kld = gaussian_kld_norm(mu, logvar)
+        z, kld = hidden_states, torch.tensor(0).to(self.args.device)  # sanity check to make sure kld is on GPU
         return z, kld
 
 
