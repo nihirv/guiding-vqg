@@ -57,68 +57,56 @@ class VQGDataset(data.Dataset):
     def __getitem__(self, index):
         """Returns one data pair (image and caption).
         """
-        # if not hasattr(self, 'images'):
-        #     annos = h5py.File(self.dataset, 'r')
-        #     self.questions = annos['questions']
-        #     self.answer_types = annos['answer_types']
-        #     self.image_indices = annos['image_indices']
-        #     self.images = annos['images']
-        #     self.image_ids = annos["image_ids"]
-        #     self.obj_labels = annos["rcnn_obj_labels"]
-        #     self.cap_labels = annos["rcnn_cap_labels"]
-        #     self.object_features = annos["rcnn_features"]
-        #     self.object_locations = annos["rcnn_locations"]
+        if not hasattr(self, 'images'):
+            annos = h5py.File(self.dataset, 'r')
+            self.questions = annos['questions']
+            self.answer_types = annos['answer_types']
+            self.image_indices = annos['image_indices']
+            self.images = annos['images']
+            self.image_ids = annos["image_ids"]
+            self.obj_labels = annos["rcnn_obj_labels"]
+            self.cap_labels = annos["rcnn_cap_labels"]
+            self.object_features = annos["rcnn_features"]
+            self.object_locations = annos["rcnn_locations"]
 
-        # if self.indices is not None:
-        #     index = self.indices[index]
+        if self.indices is not None:
+            index = self.indices[index]
 
-        # question = self.questions[index]  # natural language. Let's tokenize
-        # category = self.answer_types[index]
-        # obj_label = list(self.obj_labels[index])  # natural language
-        # cap_label = list(self.cap_labels[index])  # natural language
+        question = self.questions[index]  # natural language. Let's tokenize
+        category = self.answer_types[index]
+        obj_label = list(self.obj_labels[index])  # natural language
+        cap_label = list(self.cap_labels[index])  # natural language
 
-        # category_word = [self.cat2name[category]]  # english word
+        category_word = [self.cat2name[category]]  # english word
 
-        # cat_obj_labels = category_word + obj_label
-        # cat_obj_labels = [word for word in cat_obj_labels if word != "<EMPTY>"]
-        # cat_obj_labels = " ".join(cat_obj_labels)
-        # encoded_cat_obj_ids, encoded_cat_obj_attn_mask = self.tokenize_and_pad(cat_obj_labels, self.max_inference_len)
+        cat_obj_labels = category_word + obj_label
+        cat_obj_labels = [word for word in cat_obj_labels if word != "<EMPTY>"]
+        cat_obj_labels = " ".join(cat_obj_labels)
+        encoded_cat_obj_ids, encoded_cat_obj_attn_mask = self.tokenize_and_pad(cat_obj_labels, self.max_inference_len)
 
-        # input_concat = category_word + obj_label + cap_label
-        # input_concat = [word for word in input_concat if word != "<EMPTY>"]
-        # input_string = " ".join(input_concat)
-        # encoded_input_id, encoded_input_attention_mask = self.tokenize_and_pad(input_string, self.max_input_len)
+        input_concat = category_word + obj_label + cap_label
+        input_concat = [word for word in input_concat if word != "<EMPTY>"]
+        input_string = " ".join(input_concat)
+        encoded_input_id, encoded_input_attention_mask = self.tokenize_and_pad(input_string, self.max_input_len)
 
-        # encoded_question_id, encoded_question_attention_mask = self.tokenize_and_pad(question, self.max_q_len)
+        encoded_question_id, encoded_question_attention_mask = self.tokenize_and_pad(question, self.max_q_len)
 
-        # rcnn_features = torch.from_numpy(self.object_features[index])
-        # rcnn_locations = torch.from_numpy(self.object_locations[index])
+        rcnn_features = torch.from_numpy(self.object_features[index])
+        rcnn_locations = torch.from_numpy(self.object_locations[index])
 
-        # image_index = self.image_indices[index]
-        # image = self.images[image_index]
-        # image_id = self.image_ids[index]
-
-        image_id = 0
-        image = np.random.randn(512)
-        encoded_input_id = torch.tensor(list(range(self.max_input_len)))
-        encoded_input_attention_mask = torch.tensor([0]*self.max_input_len)
-        encoded_question_id = torch.tensor(list(range(self.max_q_len)))
-        encoded_question_attention_mask = torch.tensor([0]*self.max_q_len)
-        encoded_cat_obj_ids = torch.tensor(list(range(self.max_inference_len)))
-        encoded_cat_obj_attn_mask = torch.tensor([0]*self.max_inference_len)
-        rcnn_features = torch.tensor(0)
-        rcnn_locations = torch.tensor(0)
+        image_index = self.image_indices[index]
+        image = self.images[image_index]
+        image_id = self.image_ids[index]
 
         return image_id, torch.from_numpy(image), encoded_input_id, encoded_input_attention_mask, encoded_question_id, encoded_question_attention_mask, encoded_cat_obj_ids, encoded_cat_obj_attn_mask, rcnn_features, rcnn_locations
 
     def __len__(self):
-        return 300
-        # if self.max_examples is not None:
-        #     return self.max_examples
-        # if self.indices is not None:
-        #     return len(self.indices)
-        # annos = h5py.File(self.dataset, 'r')
-        # return annos['questions'].shape[0]
+        if self.max_examples is not None:
+            return self.max_examples
+        if self.indices is not None:
+            return len(self.indices)
+        annos = h5py.File(self.dataset, 'r')
+        return annos['questions'].shape[0]
 
 
 def collate_fn(data):

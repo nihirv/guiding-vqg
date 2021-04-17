@@ -258,13 +258,11 @@ if __name__ == "__main__":
         os.getcwd(), args.val_dataset), tokenizer, args.batch_size, shuffle=True, num_workers=8)
 
     trainVQG = TrainVQG(args, tokenizer)  # .to(device)
-    trainer = pl.Trainer(max_steps=args.total_training_steps, gradient_clip_val=5, gpus=1)
 
-    # trainer = pl.Trainer(max_steps=args.total_training_steps, gradient_clip_val=5,
-    #                      val_check_interval=500, limit_val_batches=350, callbacks=[early_stop_callback], gpus=1)
+    trainer = pl.Trainer(max_steps=args.total_training_steps, gradient_clip_val=5,
+                         val_check_interval=500, limit_val_batches=350, callbacks=[early_stop_callback], gpus=1)
 
-    trainer.fit(trainVQG, data_loader)
-    # trainer.fit(trainVQG, data_loader, val_data_loader)
+    trainer.fit(trainVQG, data_loader, val_data_loader)
 
     test_data_loader = get_loader(os.path.join(
         os.getcwd(), args.val_dataset), tokenizer, args.batch_size, shuffle=False, num_workers=8)
