@@ -48,7 +48,7 @@ class TrainVQG(pl.LightningModule):
         if kld is None:
             loss_rec = loss
             total_loss = loss
-            loss_kl = torch.tensor(0)
+            loss_kl = torch.tensor(0).to(self.args.device)
         else:
             cycle_num = (self.args.total_training_steps/4)
             mod = self.iter % cycle_num

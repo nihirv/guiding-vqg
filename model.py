@@ -75,9 +75,9 @@ class VQGModel(nn.Module):
         kld = None
         if self.latent_transformer:
             encoder_hidden_states, kld = self.latent(encoder_hidden_states)
-        # encoder_hidden_states[:, 0] = encoder_hidden_states[:, 0] + z  # Why doesn't this work??
-        # first_encoder_hidden_state = encoder_hidden_states[:, 0] + z
-        # encoder_hidden_states = torch.cat((first_encoder_hidden_state.unsqueeze(1), encoder_hidden_states[:, 1:]), dim=1)
+            # encoder_hidden_states[:, 0] = encoder_hidden_states[:, 0] + z  # Why doesn't this work??
+            # first_encoder_hidden_state = encoder_hidden_states[:, 0] + z
+            # encoder_hidden_states = torch.cat((first_encoder_hidden_state.unsqueeze(1), encoder_hidden_states[:, 1:]), dim=1)
 
         outputs = self.decoder(input_ids=question_ids, labels=question_ids, attention_mask=question_attention_masks,
                                encoder_hidden_states=encoder_hidden_states, encoder_attention_mask=encoder_attention_mask)
@@ -124,9 +124,9 @@ class VQGModel(nn.Module):
         kld = None
         if self.latent_transformer:
             encoder_hidden_states, kld = self.latent(encoder_hidden_states)
-        # encoder_hidden_states[:, 0] = encoder_hidden_states[:, 0] + z  # Why doesn't this work??
-        # first_encoder_hidden_state = encoder_hidden_states[:, 0] + z
-        # encoder_hidden_states = torch.cat((first_encoder_hidden_state.unsqueeze(1), encoder_hidden_states[:, 1:]), dim=1)
+            # encoder_hidden_states[:, 0] = encoder_hidden_states[:, 0] + z  # Why doesn't this work??
+            # first_encoder_hidden_state = encoder_hidden_states[:, 0] + z
+            # encoder_hidden_states = torch.cat((first_encoder_hidden_state.unsqueeze(1), encoder_hidden_states[:, 1:]), dim=1)
 
         ys = torch.ones(images.shape[0], 1).fill_(self.tokenizer.cls_token_id).long().to(self.args.device)
 
