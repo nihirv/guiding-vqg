@@ -62,15 +62,7 @@ class VQGModel(nn.Module):
             encoded_objects = encoded_objects.permute(1, 0, 2)
             object_mask = torch.ones(bsz, 36).long().to(self.args.device)
             encoder_attention_mask = torch.cat((encoder_attention_mask, object_mask), dim=1)
-
-            token_type_ids_text = torch.zeros_like(encoder_attention_mask).long().to(self.args.device)  # [B, ~13]
-            token_type_ids_objs = torch.ones_like(object_mask).long().to(self.args.device)  # [B, 36]
-            token_type_ids = torch.cat((token_type_ids_text, token_type_ids_objs), dim=1)
-            multi_pos_ids = torch.cat((encoder_pos_ids, torch.zeros(bsz, 36).long().to(self.args.device)), dim=1)
-
-            multi_encoder_inputs = torch.cat((encoder_hidden_states, encoded_objects), dim=1)
-            multi_encoder_outputs = self.multi_encoder(inputs_embeds=multi_encoder_inputs, position_ids=multi_pos_ids, attention_mask=src_mask, token_type_ids=token_type_ids)
-            encoder_hidden_states = multi_encoder_outputs.last_hidden_state
+            encoder_hidden_states = torch.cat((encoder_hidden_states, encoded_objects), dim=1)
 
         kld = None
         if self.latent_transformer:
@@ -111,15 +103,7 @@ class VQGModel(nn.Module):
             encoded_objects = encoded_objects.permute(1, 0, 2)
             object_mask = torch.ones(bsz, 36).long().to(self.args.device)
             encoder_attention_mask = torch.cat((encoder_attention_mask, object_mask), dim=1)
-
-            token_type_ids_text = torch.zeros_like(encoder_attention_mask).long().to(self.args.device)  # [B, ~13]
-            token_type_ids_objs = torch.ones_like(object_mask).long().to(self.args.device)  # [B, 36]
-            token_type_ids = torch.cat((token_type_ids_text, token_type_ids_objs), dim=1)
-            multi_pos_ids = torch.cat((encoder_pos_ids, torch.zeros(bsz, 36).long().to(self.args.device)), dim=1)
-
-            multi_encoder_inputs = torch.cat((encoder_hidden_states, encoded_objects), dim=1)
-            multi_encoder_outputs = self.multi_encoder(inputs_embeds=multi_encoder_inputs, position_ids=multi_pos_ids, attention_mask=src_mask, token_type_ids=token_type_ids)
-            encoder_hidden_states = multi_encoder_outputs.last_hidden_state
+            encoder_hidden_states = torch.cat((encoder_hidden_states, encoded_objects), dim=1)
 
         kld = None
         if self.latent_transformer:
