@@ -24,7 +24,7 @@ class VQGModel(nn.Module):
 
         if self.args.variant.split("-")[0] == "icodqa":
             self.text_encoder = BertModel.from_pretrained("bert-base-uncased", return_dict=True)
-        if self.args.variant == "icodqaf-icodqaf":
+        if self.args.variant == "icodqaf-icodqaf" or self.args.variant == "icodqaf-icof":
             self.text_encoder = BertModel.from_pretrained("bert-base-uncased", return_dict=True)
             self.multi_encoder = BertModel.from_pretrained("bert-base-uncased", return_dict=True)
             self.image_transformer = ImageTransformerEncoder(args)
@@ -57,7 +57,7 @@ class VQGModel(nn.Module):
         encoder_outputs = self.text_encoder(inputs_embeds=encoder_inputs, position_ids=encoder_pos_ids, attention_mask=encoder_attention_mask)
         encoder_hidden_states = encoder_outputs.last_hidden_state  # [B, T+1, D]
 
-        if self.args.variant == "icodqaf-icodqaf":
+        if self.args.variant == "icodqaf-icodqaf" or self.args.variant == "icodqaf-icof":
             encoded_objects, _ = self.image_transformer(obj_features, obj_locations)  # [B, 36, D]
             encoded_objects = encoded_objects.permute(1, 0, 2)
             object_mask = torch.ones(bsz, 36).long().to(self.args.device)
@@ -98,7 +98,7 @@ class VQGModel(nn.Module):
         encoder_outputs = self.text_encoder(inputs_embeds=encoder_inputs, position_ids=encoder_pos_ids, attention_mask=encoder_attention_mask)
         encoder_hidden_states = encoder_outputs.last_hidden_state  # [B, T+1, D]
 
-        if self.args.variant == "icodqaf-icodqaf":
+        if self.args.variant == "icodqaf-icodqaf" or self.args.variant == "icodqaf-icof":
             encoded_objects, _ = self.image_transformer(obj_features, obj_locations)  # [B, 36, D]
             encoded_objects = encoded_objects.permute(1, 0, 2)
             object_mask = torch.ones(bsz, 36).long().to(self.args.device)
