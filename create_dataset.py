@@ -3,17 +3,19 @@
 
 import base64
 import csv
+from functools import total_ordering
 import pickle
 import sys
 from PIL import Image
 from numpy.core.fromnumeric import mean
 from numpy.lib.type_check import imag
+from torch._C import dtype
 from torch.nn.functional import cosine_embedding_loss
 from torchvision import transforms
 import torch
 import torch.nn as nn
 import torchvision.models as models
-
+import pandas as pd
 import argparse
 import json
 import h5py
@@ -154,7 +156,44 @@ def extract_labels_from_scores(mean_similarity_array, label_list, set_k):
     return k_object_labels
 
 
-def save_dataset(image_dir, questions, annotations, ans2cat, output,
+def process_string_objects(x):
+    x = json.loads(x)
+    object_set = set()
+    for objs_info in x:
+        obj = objs_info["class"]
+        object_set.add(obj)
+    x = object_set
+    return list(x)
+
+
+def filter_if_not_in_glove(token_list, glove_keys):
+    filtered_token_list = []
+    to_remove_from_tokens = []
+    for t, label in enumerate(token_list):
+        if label in glove_keys:
+            filtered_token_list.append(label)
+
+    return filtered_token_list
+
+
+def find_similar_vectors(object_vectors, object_labels, x_vectors, x_labels, k=5):
+    similarity_array = np.zeros((len(object_vectors), len(x_vectors)), dtype=np.float32)
+
+    for o, obj_vector in enumerate(object_vectors):
+        for t, token_vector in enumerate(x_vectors):
+            d = distance.cosine(obj_vector, token_vector)
+            similarity_array[o, t] = d
+
+    mean_similarity_cap = np.mean(similarity_array, axis=0)  # [len(tokens)]
+    mean_similarity_obj = np.mean(similarity_array, axis=1)  # [len(object_labels)]
+
+    k_x_labels = extract_labels_from_scores(mean_similarity_cap, x_labels, k)
+    k_object_labels = extract_labels_from_scores(mean_similarity_obj, object_labels, k)
+
+    return k_object_labels, k_x_labels
+
+
+def save_dataset(image_dir, questions, annotations, raw_data_dir, ans2cat, output,
                  im_size=224, train_or_val="train", set_k=5, num_objects=36):
     # Load the data.
     with open(annotations) as f:
@@ -162,40 +201,68 @@ def save_dataset(image_dir, questions, annotations, ans2cat, output,
     with open(questions) as f:
         questions = json.load(f)
 
+    print("Loading Glove Vectors...")
     glove_file = open("data/glove.6B.300d.txt", "r", encoding="utf8")
     glove_vectors_list = [word_and_vector.strip() for word_and_vector in glove_file.readlines()]
     glove_vectors = {obj.split()[0]: np.asarray(obj.split()[1:], dtype=np.float) for obj in glove_vectors_list}
+    print("Loaded Glove Vectors!")
 
-    cfg = get_cfg()
-    # add project-specific config (e.g., TensorMask) here if you're not running a model in detectron2's core library
-    cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
-    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5  # set threshold for this model
-    # Find a model from detectron2's model zoo. You can use the https://dl.fbaipublicfiles... url as well
-    cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
-    predictor = DefaultPredictor(cfg)
-    object_classes = MetadataCatalog.get(cfg.DATASETS.TRAIN[0]).thing_classes
     cnn = EncoderCNN().to(device)
 
-    # Loading captions
-    captions = pickle.load(open("data/vqa/captions_{}".format(train_or_val), "rb"))
-
-    # Load RCNN features
-    print("Loading RCNN features. This may take a while")
-    image_feature_data = {}
-
-    filepaths = [
-        "data/updown/trainval/karpathy_test_resnet101_faster_rcnn_genome.tsv",
-        "data/updown/trainval/karpathy_train_resnet101_faster_rcnn_genome.tsv.0",
-        "data/updown/trainval/karpathy_train_resnet101_faster_rcnn_genome.tsv.1",
-        'data/updown/trainval/karpathy_val_resnet101_faster_rcnn_genome.tsv'
+    objects_filepaths = [
+        "{}/val.label.tsv".format(raw_data_dir),
+        "{}/test.label.tsv".format(raw_data_dir),
+        "{}/train.label.tsv".format(raw_data_dir)
     ]
 
-    for filepath in filepaths:
-        print("Loading file...")
-        with open(filepath, "r") as tsv_in_file:
-            ifd = read_image_features_tsv(tsv_in_file)
-            image_feature_data.update(ifd)
-    print("Loaded RCNN features!")
+    caption_features_filepaths = [
+        "{}/pred.coco_caption.val.beam5.max20.odlabels.tsv".format(raw_data_dir),
+        "{}/pred.coco_caption.test.beam5.max20.odlabels.tsv".format(raw_data_dir),
+        "{}/pred.coco_caption.train.beam5.max20.odlabels.tsv".format(raw_data_dir)
+    ]
+
+    print("Loading object file...")
+    d = []
+    set_keys = set()
+    for filepath in objects_filepaths:
+        print("Loading file:", filepath)
+        with open(filepath, "r") as f:
+            for i, line in enumerate(tqdm(f)):
+                # if i > 100:
+                #     break
+                line = tuple(line.split("\t"))
+                d.append((int(line[0]), line[1]))
+
+    df = pd.DataFrame(d, columns=["id", "objects"])
+    df["objects"] = df["objects"].apply(lambda x: process_string_objects(x))
+    df_objects = df.set_index("id")
+    set_keys.update(df_objects.index)
+    print("Loaded object file!")
+
+    print("Loading captions/features file...")
+    caption_features = []
+    d = []
+    for filepath in caption_features_filepaths:
+        print("Loading file:", filepath)
+        with open(filepath, "r") as f:
+            for i, line in enumerate(tqdm(f, total=113287)):
+
+                line = tuple(line.split("\t"))
+                id = int(line[0])
+                caption_features = json.loads(line[1])[0]
+                captions = caption_features["caption"]
+                image_features = np.array(caption_features["image_features"])
+                d.append((id, captions, image_features))
+
+    print("Building captions/features dataframe...")
+    df = pd.DataFrame(d, columns=["id", "captions", "image_features"])
+    print("Building captions/features dataframe...")
+    del d
+    df_caption_features = df.set_index("id")
+    print(df_caption_features.head())
+    print("Loaded captions/features file!")
+
+    # df = pd.merge(df_objects, df_caption_features, on="id").set_index("id")
 
     # Get the mappings from qid to answers.
     qid2ans, image_ids = create_answer_mapping(annos, ans2cat)
@@ -204,7 +271,7 @@ def save_dataset(image_dir, questions, annotations, ans2cat, output,
     print("Number of images to be written: %d" % total_images)
     print("Number of QAs to be written: %d" % total_questions)
 
-    string_dt = h5py.special_dtype(vlen=str)
+    string_dt = h5py.string_dtype(encoding='utf-8')
     h5file = h5py.File(output, "w")
     d_questions = h5file.create_dataset(
         "questions", (total_questions,), dtype=string_dt)
@@ -216,15 +283,22 @@ def save_dataset(image_dir, questions, annotations, ans2cat, output,
         "answer_types", (total_questions,), dtype='i')
     d_image_ids = h5file.create_dataset(
         "image_ids", (total_questions,), dtype='i')
-    d_rcnn_features = h5file.create_dataset(
-        "rcnn_features", (total_questions, num_objects, 2048), dtype='f')
-    d_rcnn_locations = h5file.create_dataset(
-        "rcnn_locations", (total_questions, num_objects, 5), dtype='f')
-    d_rcnn_obj_labels = h5file.create_dataset(
-        "rcnn_obj_labels", (total_questions, set_k), dtype=string_dt
+    d_object_features = h5file.create_dataset(
+        "object_features", (total_questions, num_objects, 2054), dtype='f')
+    d_obj_labels = h5file.create_dataset(
+        "obj_labels", (total_questions, 2*set_k), dtype=string_dt
     )
-    d_rcnn_cap_labels = h5file.create_dataset(
-        "rcnn_cap_labels", (total_questions, set_k), dtype=string_dt
+    d_captions = h5file.create_dataset(
+        "captions", (total_questions,), dtype=string_dt
+    )
+    d_caption_labels_from_object = h5file.create_dataset(
+        "caption_labels_from_object", (total_questions, set_k), dtype=string_dt
+    )
+    d_objects_from_qa_labels = h5file.create_dataset(
+        "objects_from_qa_labels", (total_questions, 3), dtype=string_dt
+    )
+    d_qa_labels_from_object = h5file.create_dataset(
+        "qa_labels_from_object", (total_questions, set_k), dtype=string_dt
     )
 
     # Create the transforms we want to apply to every image.
@@ -254,6 +328,7 @@ def save_dataset(image_dir, questions, annotations, ans2cat, output,
         if question_id not in qid2ans:
             continue
         if image_id not in done_img2idx:
+
             try:
                 path = "COCO_%s2014_%d.jpg" % (train_or_val, image_id)
                 image = Image.open(os.path.join(
@@ -278,93 +353,60 @@ def save_dataset(image_dir, questions, annotations, ans2cat, output,
             done_img2idx[image_id] = i_index
             i_index += 1
 
-        object_detectection = predictor(image_for_predictor)
-        object_label_class_idxs = object_detectection["instances"].pred_classes
-        object_labels = list(set([object_classes[item] for item in object_label_class_idxs]))
-
         question = entry["question"]
-        captionz = " ".join(captions[image_id])
         answer = qid2ans[question_id]
-        caption_question_ans = captionz + " " + question + " " + answer
-        tokens = list(set(tokenize(caption_question_ans.lower().strip())))
-        tokens = [token for token in tokens if token not in STOP_WORDS]
+        caption = df_caption_features.loc[image_id]["captions"]
+        # object_labels = df.loc[image_id]["objects"]
+        object_labels = df_objects.loc[image_id]["objects"]
 
-        new_object_labels = []
+        temp_object_labels = []
         for label in object_labels:
             # label can be multiple words (e.g. sports ball). Let's take the average vector
-            split_label = label.split()
-            new_object_labels.extend(split_label)
-
-        object_labels = list(set(new_object_labels))
+            split_label = label.lower().split()
+            temp_object_labels.extend(split_label)
+        object_labels = list(set(temp_object_labels))
+        object_labels = filter_if_not_in_glove(object_labels, glove_vectors.keys())
 
         object_label_vectors = []
         for label in object_labels:
             object_label_vectors.append(glove_vectors[label])
 
-        token_vectors = []
-        to_remove_from_tokens = []
-        for t, label in enumerate(tokens):
-            if label in glove_vectors:
-                token_vectors.append(label)
-            else:
-                to_remove_from_tokens.append(t)
+        set_obj_labels = set()
+        # related caption tokens
+        caption_tokens = list(set(tokenize(caption.lower().strip())))
+        caption_tokens = filter_if_not_in_glove(caption_tokens, glove_vectors.keys())
+        caption_vectors = [glove_vectors[label] for label in caption_tokens]
+        obj_cap_labels, similar_cap_labels = find_similar_vectors(object_label_vectors, object_labels, caption_vectors, caption_tokens, k=set_k)
+        set_obj_labels.update(obj_cap_labels)
+        d_caption_labels_from_object[q_index] = np.array(similar_cap_labels)
 
-        for x in sorted(to_remove_from_tokens, reverse=True):
-            del tokens[x]
+        # related question tokens
+        qa_token_string = question + " " + answer
+        qa_tokens = list(set(tokenize(qa_token_string.lower().strip())))
+        qa_tokens = filter_if_not_in_glove(qa_tokens, glove_vectors.keys())
+        qa_vectors = [glove_vectors[label] for label in qa_tokens]
+        obj_qa_labels, similar_qa_labels = find_similar_vectors(object_label_vectors, object_labels, qa_vectors, qa_tokens, k=3)
+        d_objects_from_qa_labels[q_index] = np.array(obj_qa_labels)
+        obj_qa_labels, similar_qa_labels = find_similar_vectors(object_label_vectors, object_labels, qa_vectors, qa_tokens, k=set_k)
+        set_obj_labels.update(obj_qa_labels)
+        d_qa_labels_from_object[q_index] = np.array(similar_qa_labels)
 
-        token_vectors = [glove_vectors[label] for label in tokens]
+        obj_pad_len = 2*set_k
+        set_obj_labels = list(set_obj_labels)
+        while len(set_obj_labels) < obj_pad_len:
+            set_obj_labels.append("<EMPTY>")
 
-        # TODO: extract object vectors for object_label_vectors
-
-        # construct a [len(object_labels), len(tokens)] matrix
-        similarity_array = np.zeros((len(object_label_vectors), len(tokens)), dtype=np.float32)
-
-        for o, obj_vector in enumerate(object_label_vectors):
-            for t, token_vector in enumerate(token_vectors):
-                d = distance.cosine(obj_vector, token_vector)
-                similarity_array[o, t] = d
-
-        mean_similarity_cap = np.mean(similarity_array, axis=0)  # [len(tokens)]
-        mean_similarity_obj = np.mean(similarity_array, axis=1)  # [len(object_labels)]
-
-        k_cap_labels = extract_labels_from_scores(mean_similarity_cap, tokens, set_k)
-        k_object_labels = extract_labels_from_scores(mean_similarity_obj, object_labels, set_k)
-
-        d_rcnn_obj_labels[q_index] = np.array(k_object_labels)
-        d_rcnn_cap_labels[q_index] = np.array(k_cap_labels)
+        d_obj_labels[q_index] = np.array(set_obj_labels)
+        d_image_ids[q_index] = image_id
         d_questions[q_index] = question
+        d_captions[q_index] = caption
 
         answer = qid2ans[question_id]
         d_answer_types[q_index] = int(ans2cat[answer])
         d_indices[q_index] = done_img2idx[image_id]
-        d_image_ids[q_index] = image_id
 
-        rcnn_features_zeros = np.zeros((num_objects, 2048), dtype=np.float32)
-        rcnn_normalised_boxes = np.zeros((num_objects, 5), dtype=np.float32)
-
-        try:
-            relevant_image_feature_object = image_feature_data[image_id]
-            found_images.add(image_id)
-        except:
-            # print("Skipping file {} due to an error. Most like the file could not be found.".format(
-            #     image_id))
-            not_found_images.add(image_id)
-            continue
-
-        image_features, normalised_boxes = relevant_image_feature_object[
-            "features"], relevant_image_feature_object["normalized_boxes_area"]
-        len_features = image_features.shape[0]
-        if len_features > num_objects:
-            image_features = image_features[:num_objects]
-            normalised_boxes = normalised_boxes[:num_objects]
-            rcnn_features_zeros = image_features
-            rcnn_normalised_boxes = normalised_boxes
-        else:
-            rcnn_features_zeros[:len_features] = image_features
-            rcnn_normalised_boxes[:len_features] = normalised_boxes
-
-        d_rcnn_features[q_index] = rcnn_features_zeros
-        d_rcnn_locations[q_index] = rcnn_normalised_boxes
+        truncated_image_features = df_caption_features.loc[image_id]["image_features"][:num_objects]
+        d_object_features[q_index] = truncated_image_features
 
         q_index += 1
         # bar.update(q_index)
@@ -379,26 +421,29 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     # Inputs.
-    parser.add_argument('--image-dir', type=str, default='data/vqa/train2014',
+    parser.add_argument('--image-dir', type=str, default='/data/lama/mscoco/images/train2014/',
                         help='directory for resized images')
     parser.add_argument('--questions', type=str,
-                        default='data/vqa/v2_OpenEnded_mscoco_'
+                        default='/data/nv419/VQG_DATA/raw/v2_OpenEnded_mscoco_'
                         'train2014_questions.json',
                         help='Path for train annotation file.')
     parser.add_argument('--annotations', type=str,
-                        default='data/vqa/v2_mscoco_'
+                        default='/data/nv419/VQG_DATA/raw/v2_mscoco_'
                         'train2014_annotations.json',
                         help='Path for train annotation file.')
     parser.add_argument('--cat2ans', type=str,
-                        default='data/vqa/iq_dataset.json',
+                        default='/data/nv419/VQG_DATA/raw/iq_dataset.json',
                         help='Path for the answer types.')
+    parser.add_argument('--raw_data_dir', type=str,
+                        default="/data/nv419/VQG_DATA/raw",
+                        help="Path for the raw data files. Should include *.label.tsv and pred.coco_caption.* etc")
 
     # Outputs.
     parser.add_argument('--output', type=str,
-                        default='data/processed/iq_dataset.hdf5',
+                        default='/data/nv419/VQG_DATA/processed/iq_dataset.hdf5',
                         help='directory for resized images.')
     parser.add_argument('--cat2name', type=str,
-                        default='data/processed/cat2name.json',
+                        default='/data/nv419/VQG_DATA/processed/cat2name.json',
                         help='Location of mapping from category to type name.')
 
     # Hyperparameters.
@@ -428,7 +473,7 @@ if __name__ == '__main__':
     if args.val == True:
         train_or_val = "val"
 
-    save_dataset(args.image_dir, args.questions, args.annotations, ans2cat, args.output,
+    save_dataset(args.image_dir, args.questions, args.annotations, args.raw_data_dir, ans2cat, args.output,
                  im_size=224, train_or_val=train_or_val, set_k=5)
     print(('Wrote dataset to %s' % args.output))
     # Hack to avoid import errors.

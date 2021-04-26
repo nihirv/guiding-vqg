@@ -30,9 +30,11 @@ class VQGDataset(data.Dataset):
         self.max_examples = max_examples
         self.indices = indices
         self.tokenizer = tokenizer
-        self.max_input_len = 14
-        self.max_inference_len = 8
+        self.max_input_len = 25
+        self.max_legal_len = 17
+        self.max_oqa_inference_len = 11
         self.max_q_len = 26
+        self.max_cap_len = 30
 
         self.cat2name = sorted(
             json.load(open("data/processed/cat2name.json", "r")))
@@ -54,6 +56,18 @@ class VQGDataset(data.Dataset):
 
         return encoded_id, encoded_attention_mask
 
+    # *args are inputs, each input being a list of strings
+    def build_inputs(self, len, *args):
+        args_list = []
+        for arg in args:
+            args_list += arg
+        # args_list is now a 1d list of strings which contains all tokens in all *args
+        args_list = list(dict.fromkeys(args_list))  # unique words only. dict() preserves ordering which means we can easily extract out the category in the main.py file
+        args_list = [word for word in args_list if word != "<EMPTY>"]
+        args_string = " ".join(args_list)
+        args_ids, args_attn_mask = self.tokenize_and_pad(args_string, len)
+        return args_ids, args_attn_mask
+
     def __getitem__(self, index):
         """Returns one data pair (image and caption).
         """
@@ -64,41 +78,48 @@ class VQGDataset(data.Dataset):
             self.image_indices = annos['image_indices']
             self.images = annos['images']
             self.image_ids = annos["image_ids"]
-            self.obj_labels = annos["rcnn_obj_labels"]
-            self.cap_labels = annos["rcnn_cap_labels"]
-            self.object_features = annos["rcnn_features"]
-            self.object_locations = annos["rcnn_locations"]
+            self.object_features = annos["object_features"]
+            self.obj_labels = annos["obj_labels"]
+            self.captions = annos["captions"]
+            self.caption_labels_from_object = annos["caption_labels_from_object"]
+            self.objects_from_qa_labels = annos["objects_from_qa_labels"]
+            self.qa_labels_from_object = annos["qa_labels_from_object"]
 
         if self.indices is not None:
             index = self.indices[index]
 
         question = self.questions[index]  # natural language. Let's tokenize
-        category = self.answer_types[index]
-        obj_label = list(self.obj_labels[index])  # natural language
-        cap_label = list(self.cap_labels[index])  # natural language
-
-        category_word = [self.cat2name[category]]  # english word
-
-        cat_obj_labels = category_word + obj_label
-        cat_obj_labels = [word for word in cat_obj_labels if word != "<EMPTY>"]
-        cat_obj_labels = " ".join(cat_obj_labels)
-        encoded_cat_obj_ids, encoded_cat_obj_attn_mask = self.tokenize_and_pad(cat_obj_labels, self.max_inference_len)
-
-        input_concat = category_word + obj_label + cap_label
-        input_concat = [word for word in input_concat if word != "<EMPTY>"]
-        input_string = " ".join(input_concat)
-        encoded_input_id, encoded_input_attention_mask = self.tokenize_and_pad(input_string, self.max_input_len)
-
         encoded_question_id, encoded_question_attention_mask = self.tokenize_and_pad(question, self.max_q_len)
 
-        rcnn_features = torch.from_numpy(self.object_features[index])
-        rcnn_locations = torch.from_numpy(self.object_locations[index])
+        caption = self.captions[index]
+        encded_caption_id, encoded_caption_attention_mask = self.tokenize_and_pad(caption, self.max_cap_len)
+
+        category = self.answer_types[index]
+        category_label = [self.cat2name[category]]                   # ['binary']
+        obj_label = list(self.obj_labels[index])                    # ['trousers', 'swimming', 'racket', 'jeans', 'footwear', 'furniture', '<EMPTY>', '<EMPTY>', '<EMPTY>', '<EMPTY>']
+        co_label = list(self.caption_labels_from_object[index])     # ['court', 'holding', 'racket', 'on', 'a']
+        oqa_label = list(self.objects_from_qa_labels[index])        # ['footwear', 'trousers', 'racket']
+        qao_label = list(self.qa_labels_from_object[index])         # ['yes', 'play', 'can', 'he', '?']
+
+        # all_train_inputs # category label, object labels, co, oqa, qao, (caption)
+        # legal_inputs=inference_inputs # category label, object labels, co, (caption)
+        # qa_inference_inputs # category label, oqa, co, (caption)
+
+        all_train_input_ids, all_train_input_attn_mask = self.build_inputs(self.max_input_len, category_label, obj_label, co_label, oqa_label, qao_label)
+        legal_input_ids, legal_input_attn_mask = self.build_inputs(self.max_legal_len, category_label, obj_label, co_label)
+        qa_inference_input_ids, qa_inference_input_attn_mask = self.build_inputs(self.max_oqa_inference_len, category_label, oqa_label, co_label)
+
+        object_features_full_vector = self.object_features[index]  # 2054-d
+        object_features = object_features_full_vector[:2048]  # 2048-d
+        object_locations = object_features_full_vector[2048:]  # 6-d
+        object_features = torch.from_numpy(object_features)
+        object_locations = torch.from_numpy(object_locations)
 
         image_index = self.image_indices[index]
         image = self.images[image_index]
         image_id = self.image_ids[index]
 
-        return image_id, torch.from_numpy(image), encoded_input_id, encoded_input_attention_mask, encoded_question_id, encoded_question_attention_mask, encoded_cat_obj_ids, encoded_cat_obj_attn_mask, rcnn_features, rcnn_locations
+        return image_id, torch.from_numpy(image), encoded_question_id, encoded_question_attention_mask, all_train_input_ids, all_train_input_attn_mask, legal_input_ids, legal_input_attn_mask, qa_inference_input_ids, qa_inference_input_attn_mask, object_features, object_locations
 
     def __len__(self):
         if self.max_examples is not None:
@@ -111,18 +132,20 @@ class VQGDataset(data.Dataset):
 
 def collate_fn(data):
 
-    image_ids, images, encoded_input_ids, encoded_input_attention_masks, encoded_question_ids, encoded_question_attention_masks, encoded_cat_obj_ids, encoded_cat_obj_attn_mask, rcnn_features, rcnn_locations = list(
+    image_ids, images, encoded_question_id, encoded_question_attention_mask, all_train_input_ids, all_train_input_attn_mask, legal_input_ids, legal_input_attn_mask, qa_inference_input_ids, qa_inference_input_attn_mask, object_features, object_locations = list(
         zip(*data))
 
     images = torch.stack(images).float()
-    input_ids = torch.stack(encoded_input_ids).long()
-    input_attention_masks = torch.stack(encoded_input_attention_masks).long()
-    question_ids = torch.stack(encoded_question_ids).long()
-    question_attention_masks = torch.stack(encoded_question_attention_masks).long()
-    inference_ids = torch.stack(encoded_cat_obj_ids).long()
-    inference_attention_masks = torch.stack(encoded_cat_obj_attn_mask).long()
-    rcnn_features = torch.stack(rcnn_features)
-    rcnn_locations = torch.stack(rcnn_locations)
+    question_ids = torch.stack(encoded_question_id).long()
+    question_attention_masks = torch.stack(encoded_question_attention_mask).long()
+    input_ids = torch.stack(all_train_input_ids).long()
+    input_attention_masks = torch.stack(all_train_input_attn_mask).long()
+    legal_ids = torch.stack(legal_input_ids).long()
+    legal_attention_masks = torch.stack(legal_input_attn_mask).long()
+    qa_inference_ids = torch.stack(qa_inference_input_ids).long()
+    qa_inference_attention_masks = torch.stack(qa_inference_input_attn_mask).long()
+    object_features = torch.stack(object_features)
+    object_locations = torch.stack(object_locations)
 
     return {"images": images,
             "image_ids": image_ids,
@@ -130,10 +153,12 @@ def collate_fn(data):
             "question_attention_masks": question_attention_masks,
             "input_ids": input_ids,
             "input_attention_masks": input_attention_masks,
-            "inference_ids": inference_ids,
-            "inference_attention_masks": inference_attention_masks,
-            "rcnn_features": rcnn_features,
-            "rcnn_locations": rcnn_locations
+            "legal_ids": legal_ids,
+            "legal_attention_masks": legal_attention_masks,
+            "qa_inference_ids": qa_inference_ids,
+            "qa_inference_attention_masks": qa_inference_attention_masks,
+            "object_features": object_features,
+            "object_locations": object_locations
             }
 
 

@@ -37,11 +37,21 @@ class TrainVQG(pl.LightningModule):
         self.msjs = []
         self.fbds = []
 
-    def forward(self, batch):
-        images, question_ids, question_attention_masks, input_ids, input_attention_masks, obj_features, obj_locations = batch["images"], batch[
-            "question_ids"], batch["question_attention_masks"], batch["input_ids"], batch["input_attention_masks"], batch["rcnn_features"], batch["rcnn_locations"]
+    def forward(self, batch, val=False):
 
-        loss = self.model(images, question_ids, question_attention_masks, input_ids, input_attention_masks, obj_features, obj_locations)
+        images = batch["images"]
+        question_ids = batch["question_ids"]
+        question_attention_masks = batch["question_attention_masks"]
+        input_ids = batch["input_ids"]
+        input_attention_masks = batch["input_attention_masks"]
+        object_features = batch["object_features"]
+        object_locations = batch["object_locations"]
+
+        if val:
+            input_ids = batch["legal_ids"]
+            input_attention_masks = batch["legal_attention_masks"]
+
+        loss = self.model(images, question_ids, question_attention_masks, input_ids, input_attention_masks, object_features, object_locations)
         return loss
 
     def calculate_losses(self, loss, kld, r=0.5):
@@ -78,7 +88,14 @@ class TrainVQG(pl.LightningModule):
         return total_loss
 
     def validation_step(self, batch, batch_idx):
-        loss, kld = self(batch)
+        return batch
+
+    def validation_epoch_end(self, batch):
+        print("##### End of Epoch validation #####")
+
+        batch = batch[0]
+
+        loss, kld = self(batch, val=True)
         total_loss, loss_rec, loss_kl = self.calculate_losses(loss, kld)
         self.log('total val loss', total_loss)
         self.log('rec val loss', loss_rec)
@@ -86,12 +103,6 @@ class TrainVQG(pl.LightningModule):
         self.val_losses["total loss"].append(total_loss.item())
         self.val_losses["rec loss"].append(loss_rec.item())
         self.val_losses["kl loss"].append(loss_kl.item())
-        return batch
-
-    def validation_epoch_end(self, batch):
-        print("##### End of Epoch validation #####")
-
-        batch = batch[0]
 
         scores = self.decode_and_print(batch)
         for k, v in scores.items():
@@ -129,12 +140,19 @@ class TrainVQG(pl.LightningModule):
         return torch.optim.Adam(self.parameters(), lr=self.args.lr)
 
     def decode_and_print(self, batch, print_lim=20, val=True):
-        images, image_ids, question_ids, inference_ids, inference_attention_masks, obj_features, obj_locations = batch["images"], batch["image_ids"], batch[
-            "question_ids"], batch["input_ids"], batch["input_attention_masks"], batch["rcnn_features"], batch["rcnn_locations"]
-        # images, question_ids, input_ids, input_attention_masks = images.to(self.args.device), question_ids.to(
-        #     self.args.device), input_ids.to(self.args.device), input_attention_masks.to(self.args.device)
 
-        if self.args.variant.split("-")[1] == "ico":
+        images = batch["images"]
+        image_ids = batch["image_ids"]
+        question_ids = batch["question_ids"]
+        object_features = batch["object_features"]
+        object_locations = batch["object_locations"]
+
+        inference_ids = batch["legal_ids"]
+        inference_attention_masks = batch["legal_attention_masks"]
+        qa_inference_ids = batch["qa_inference_ids"]
+        qa_inference_attention_masks = batch["qa_inference_attention_masks"]
+
+        if self.args.variant.split("-")[1] == "ico" or self.args.variant.split("-")[1] == "icof":
             inference_ids, inference_attention_masks = batch["inference_ids"], batch["inference_attention_masks"]
 
         decoded_questions = [self.tokenizer.decode(to_decode) for to_decode in question_ids]
@@ -142,7 +160,7 @@ class TrainVQG(pl.LightningModule):
 
         preds = []
         gts = []
-        decoded_sentences = self.model.decode_greedy(images, inference_ids, inference_attention_masks, obj_features, obj_locations)
+        decoded_sentences = self.model.decode_greedy(images, inference_ids, inference_attention_masks, object_features, object_locations)
         for i, sentence in enumerate(decoded_sentences):
             curr_input = self.filter_special_tokens(decoded_inputs[i])
             generated_q = self.filter_special_tokens(sentence)
