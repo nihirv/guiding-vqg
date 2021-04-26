@@ -47,6 +47,10 @@ class TrainVQG(pl.LightningModule):
         object_features = batch["object_features"]
         object_locations = batch["object_locations"]
 
+        if self.args.variant.split("-")[0] in ("icod", "icodf"):
+            input_ids = batch["legal_ids"]
+            input_attention_masks = batch["legal_attention_masks"]
+
         if val:
             input_ids = batch["legal_ids"]
             input_attention_masks = batch["legal_attention_masks"]
