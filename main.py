@@ -122,7 +122,7 @@ class TrainVQG(pl.LightningModule):
         qa_decode_scores = self.decode_and_print(batch, qa_decode=True)
         for k, v in qa_decode_scores.items():
             rounded_val = np.round(np.mean(v) * 100, 4)
-            self.log("val_qa_decode"+k, rounded_val)
+            self.log("val_qa_decode_"+k, rounded_val)
             print(k, "\t", rounded_val)
         print("*"*20)
 
