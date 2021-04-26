@@ -259,9 +259,9 @@ if __name__ == "__main__":
                         help="Number of heads in the multi-head attention")
     parser.add_argument("--variant", type=str, default="icodqa-icodqa", help="Model variant to run.")
     parser.add_argument("--dataset", type=str,
-                        default="data/processed/iq_dataset.hdf5")
+                        default="/data/nv419/VQG_DATA/processed/iq_dataset.hdf5")
     parser.add_argument("--val_dataset", type=str,
-                        default="data/processed/iq_val_dataset.hdf5")
+                        default="/data/nv419/VQG_DATA/processed/iq_val_dataset.hdf5")
 
     args = parser.parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
