@@ -118,11 +118,19 @@ class TrainVQG(pl.LightningModule):
             print("val", k + ":", np.round(np.mean(v), 4))
             self.val_losses[k] = []
 
+        print("********** DECODING OBJECT SELECTED QUESTIONS ********** ")
+        qa_decode_scores = self.decode_and_print(batch, qa_decode=True)
+        for k, v in qa_decode_scores.items():
+            rounded_val = np.round(np.mean(v) * 100, 4)
+            self.log("val_qa_decode"+k, rounded_val)
+            print(k, "\t", rounded_val)
+        print("*"*20)
+
         print()
         print("This was validating after iteration {}".format(self.iter))
 
     def test_step(self, batch, batch_idx):
-        scores = self.decode_and_print(batch, val=False)
+        scores = self.decode_and_print(batch, qa_decode=True, val=False)
         for k, v in scores.items():
             rounded_val = np.round(np.mean(v) * 100, 4)
             print(k, "\t", rounded_val)
@@ -143,7 +151,7 @@ class TrainVQG(pl.LightningModule):
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.args.lr)
 
-    def decode_and_print(self, batch, print_lim=20, val=True):
+    def decode_and_print(self, batch, qa_decode=False, print_lim=20, val=True):
 
         images = batch["images"]
         image_ids = batch["image_ids"]
@@ -153,11 +161,10 @@ class TrainVQG(pl.LightningModule):
 
         inference_ids = batch["legal_ids"]
         inference_attention_masks = batch["legal_attention_masks"]
-        qa_inference_ids = batch["qa_inference_ids"]
-        qa_inference_attention_masks = batch["qa_inference_attention_masks"]
 
-        if self.args.variant.split("-")[1] == "ico" or self.args.variant.split("-")[1] == "icof":
-            inference_ids, inference_attention_masks = batch["inference_ids"], batch["inference_attention_masks"]
+        if qa_decode:
+            inference_ids = batch["qa_inference_ids"]
+            inference_attention_masks = batch["qa_inference_attention_masks"]
 
         decoded_questions = [self.tokenizer.decode(to_decode) for to_decode in question_ids]
         decoded_inputs = [self.tokenizer.decode(to_decode) for to_decode in inference_ids]
@@ -235,7 +242,7 @@ class MyEarlyStopping(EarlyStopping):
 
 
 early_stop_callback = EarlyStopping(
-    monitor='val_Bleu_4',
+    monitor='val_qa_decode_Bleu_4',
     min_delta=0.00,
     patience=10,
     verbose=True,
