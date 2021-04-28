@@ -29,6 +29,7 @@ class TrainVQG(pl.LightningModule):
         self.model = VQGModel(args, self.tokenizer, self.latent_transformer)
 
         self.iter = 0
+        self.kliter = 0
         self.test_scores = {}
         self.nlge = NLGEval(no_glove=True, no_skipthoughts=True)
 
@@ -64,8 +65,9 @@ class TrainVQG(pl.LightningModule):
             total_loss = loss
             loss_kl = torch.tensor(0).to(self.args.device)
         else:
+            self.kliter += 1
             cycle_num = (self.args.total_training_steps/4)
-            mod = self.iter % cycle_num
+            mod = self.kliter % cycle_num
             temp = mod/cycle_num
             beta = 1
             if temp <= r:
@@ -78,7 +80,7 @@ class TrainVQG(pl.LightningModule):
         return total_loss, loss_rec, loss_kl
 
     def training_step(self, batch, batch_idx):
-        if self.args.num_warmup_steps < self.iter:
+        if self.args.num_warmup_steps == self.iter:
             self.latent_transformer = True
             self.model.switch_latent_transformer(self.latent_transformer)
             self.configure_optimizers()  # reset the momentum

@@ -39,7 +39,7 @@ class Latent(nn.Module):
         kld_loss = 0
 
         mean_posterior, logvar_posterior = None, None
-        if x_p is not None:  # if x_p IS None, then we're in eval mode.
+        if x_p is not None:  # if x_p IS None, then we're in inference mode.
             mean_logvar_posterior = self.mean_logvar_posterior(torch.cat((x_p, x), dim=-1))
             mean_posterior, logvar_posterior = mean_logvar_posterior[:, :self.args.latent_dim], mean_logvar_posterior[:, self.args.latent_dim:]
 

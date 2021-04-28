@@ -121,7 +121,7 @@ class VQGModel(nn.Module):
         z, kld = torch.tensor(0).to(self.args.device), None
         if self.args.variant == "icod-icod-l,lg,lv":
             if self.latent_transformer:
-                z, kld = self.latent_layer(encoder_hidden_states[:, 0])
+                z, kld = self.latent_layer(encoder_hidden_states[:, 0], None)
 
         ys = torch.ones(images.shape[0], 1).fill_(self.tokenizer.cls_token_id).long().to(self.args.device)
 
