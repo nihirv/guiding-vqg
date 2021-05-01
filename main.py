@@ -279,7 +279,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_heads", type=int, default=8,
                         help="Number of heads in the multi-head attention")
     parser.add_argument("--max_decode_len", type=int, default=50, help="Maximum length decoded sequences are allowed to be")
-    parser.add_argument("--variant", type=str, default="icodqa-icodqa", help="Model variant to run.")
+    parser.add_argument("--variant", type=str, default="icod-icod", help="Model variant to run.")
     parser.add_argument("--dataset", type=str,
                         default="/data/nv419/VQG_DATA/processed/iq_dataset.hdf5")
     parser.add_argument("--val_dataset", type=str,
