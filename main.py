@@ -14,6 +14,7 @@ from transformers.models.bert.tokenization_bert import BertTokenizer
 from nlg_eval.nlgeval import NLGEval
 from TextGenerationEvaluationMetrics.multiset_distances import MultisetDistances
 from operator import itemgetter
+import math
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 torch.autograd.set_detect_anomaly(True)
@@ -60,29 +61,34 @@ class TrainVQG(pl.LightningModule):
         return loss
 
     def calculate_losses(self, loss, kld, r=0.5):
+        loss_rec = loss
         if kld is None:
-            loss_rec = loss
             total_loss = loss
             loss_kl = torch.tensor(0).to(self.args.device)
         else:
             self.kliter += 1
-            cycle_num = (self.args.total_training_steps/4)
-            mod = self.kliter % cycle_num
-            temp = mod/cycle_num
-            beta = 1
-            if temp <= r:
-                beta = 1/(1 + np.exp(-temp))
+            if "icod-icod-l,lg,lv,ckl":
+                cycle_num = (self.args.total_training_steps/4)
+                mod = self.kliter % cycle_num
+                temp = mod/cycle_num
+                beta = 1
+                if temp <= r:
+                    beta = 1/(1 + np.exp(-temp))
 
-            loss_kl = kld
-            loss_rec = loss
-            total_loss = loss + beta * kld
+                loss_kl = kld
+                total_loss = loss + beta * kld
+            if "icod-icod-l,lg,lv,akl":
+                kl_weight = min(math.tanh(6 * self.kliter /
+                                          self.args.full_kl_step - 3) + 1, 1)
+                loss_kl = self.args.kl_ceiling * kl_weight + kld
+                total_loss = loss_rec + loss_kl
 
         return total_loss, loss_rec, loss_kl
 
     def training_step(self, batch, batch_idx):
         if self.args.num_warmup_steps == self.iter:
             self.latent_transformer = True
-            self.model.switch_latent_transformer(self.latent_transformer)
+            self.model.model.switch_latent_transformer(self.latent_transformer)
             self.configure_optimizers()  # reset the momentum
 
         loss, kld = self(batch)
@@ -110,15 +116,11 @@ class TrainVQG(pl.LightningModule):
         self.val_losses["rec loss"].append(loss_rec.item())
         self.val_losses["kl loss"].append(loss_kl.item())
 
-        scores = self.decode_and_print(batch)
-        for k, v in scores.items():
-            rounded_val = np.round(np.mean(v) * 100, 4)
-            self.log("val_"+k, rounded_val)
-            print(k, "\t", rounded_val)
-
-        for k, v in self.val_losses.items():
-            print("val", k + ":", np.round(np.mean(v), 4))
-            self.val_losses[k] = []
+        # scores = self.decode_and_print(batch)
+        # for k, v in scores.items():
+        #     rounded_val = np.round(np.mean(v) * 100, 4)
+        #     self.log("val_"+k, rounded_val)
+        #     print(k, "\t", rounded_val)
 
         print("********** DECODING OBJECT SELECTED QUESTIONS ********** ")
         qa_decode_scores = self.decode_and_print(batch, qa_decode=True)
@@ -127,6 +129,10 @@ class TrainVQG(pl.LightningModule):
             self.log("val_qa_decode_"+k, rounded_val)
             print(k, "\t", rounded_val)
         print("*"*20)
+#
+        for k, v in self.val_losses.items():
+            print("val", k + ":", np.round(np.mean(v), 4))
+            self.val_losses[k] = []
 
         print()
         print("This was validating after iteration {}".format(self.iter))
@@ -261,15 +267,18 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=3e-5,
                         help="Learning rate of the network")
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--num_warmup_steps", type=float, default=35000,
+    parser.add_argument("--num_warmup_steps", type=float, default=2000,
                         help="Number of warmup steps before turning on latent transformer")
     parser.add_argument("--total_training_steps", type=int, default=35000,
                         help="Total number of training steps for the model")
+    parser.add_argument("--kl_ceiling", type=int, default=0.5)
+    parser.add_argument("--full_kl_step", type=int, default=3000, help="Total steps until kl is fully annealed")
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--num_layers", type=int, default=6,
                         help="Number of transformer layers in encoder and decoder")
     parser.add_argument("--num_heads", type=int, default=8,
                         help="Number of heads in the multi-head attention")
+    parser.add_argument("--max_decode_len", type=int, default=50, help="Maximum length decoded sequences are allowed to be")
     parser.add_argument("--variant", type=str, default="icodqa-icodqa", help="Model variant to run.")
     parser.add_argument("--dataset", type=str,
                         default="/data/nv419/VQG_DATA/processed/iq_dataset.hdf5")
@@ -286,12 +295,12 @@ if __name__ == "__main__":
     data_loader = get_loader(os.path.join(
         os.getcwd(), args.dataset), tokenizer, args.batch_size, shuffle=True, num_workers=8)
     val_data_loader = get_loader(os.path.join(
-        os.getcwd(), args.val_dataset), tokenizer, args.batch_size, shuffle=True, num_workers=8)
+        os.getcwd(), args.val_dataset), tokenizer, args.batch_size, shuffle=False, num_workers=8)
 
     trainVQG = TrainVQG(args, tokenizer)  # .to(device)
 
     trainer = pl.Trainer(max_steps=args.total_training_steps, gradient_clip_val=5,
-                         val_check_interval=500, limit_val_batches=350, callbacks=[early_stop_callback], gpus=1)
+                         val_check_interval=500, limit_val_batches=500, callbacks=[early_stop_callback], gpus=1)
 
     trainer.fit(trainVQG, data_loader, val_data_loader)
 

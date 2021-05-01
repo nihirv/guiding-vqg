@@ -1,3 +1,4 @@
+import torch.nn.functional as F
 import copy
 from torch import nn
 from fairseq.models import transformer
@@ -149,7 +150,7 @@ class ImageTransformerEncoder(transformer.TransformerEncoder):
         self.args = args
 
         super().__init__(args, None, FeatureProjection(args))
-        self.spatial_encoding = nn.Linear(5, args.hidden_dim)
+        self.spatial_encoding = nn.Linear(6, args.hidden_dim)
         self.dropout = nn.Dropout(args.dropout)
 
     def forward(self, image_features, feature_locations):
@@ -166,7 +167,7 @@ class ImageTransformerEncoder(transformer.TransformerEncoder):
 
         # compute padding mask
         lengths = torch.zeros((image_features.shape[0])).fill_(
-            36).to(self.args.device).long()
+            image_features.shape[1]).to(self.args.device).long()
         encoder_padding_mask = create_padding_mask(image_features, lengths)
 
         # encoder layers
@@ -177,3 +178,100 @@ class ImageTransformerEncoder(transformer.TransformerEncoder):
             x = self.layer_norm(x)
 
         return x, encoder_padding_mask
+
+
+class Attention(nn.Module):
+    def __init__(self, hidden_dim):
+        super().__init__()
+
+        self.attn = nn.Linear(hidden_dim + hidden_dim, hidden_dim)
+        self.v = nn.Linear(hidden_dim, 1, bias=False)
+
+    def forward(self, hidden, encoder_outputs):
+
+        # hidden = [batch size, hid dim]
+        # encoder_outputs = [batch size, src len, hid dim]
+
+        batch_size = encoder_outputs.shape[0]
+        src_len = encoder_outputs.shape[1]
+
+        # repeat decoder hidden state src_len times
+        hidden = hidden.unsqueeze(1).repeat(1, src_len, 1)
+
+        # hidden = [batch size, src len, hid dim]
+
+        energy = torch.tanh(
+            self.attn(torch.cat((hidden, encoder_outputs), dim=2)))
+
+        # energy = [batch size, src len, hid dim]
+
+        attention = self.v(energy).squeeze(2)
+
+        # attention= [batch size, src len]
+
+        return F.softmax(attention, dim=1)
+
+
+class Decoder(nn.Module):
+    def __init__(self, args, vocab_size):
+        super().__init__()
+
+        self.output_dim = vocab_size
+        self.attention = Attention(args.hidden_dim)
+
+        self.embedding = nn.Embedding(vocab_size, args.hidden_dim)
+
+        self.rnn = nn.GRU(args.hidden_dim + args.hidden_dim, args.hidden_dim, batch_first=True)
+
+        self.fc_out = nn.Sequential(
+            nn.Tanh(),
+            nn.Linear(args.hidden_dim + args.hidden_dim + args.hidden_dim, vocab_size))
+
+        self.dropout = nn.Dropout(args.dropout)
+
+    def forward(self, input, hidden, encoder_outputs):
+
+        # input = [batch size]
+        # hidden = [batch size, hid dim]
+        # encoder_outputs = [batch size, src len, hid dim]
+
+        input = input.unsqueeze(1)
+
+        # input = [batch size, 1]
+
+        embedded = self.dropout(self.embedding(input))
+
+        # embedded = [batch size, 1, hidden dim]
+
+        a = self.attention(hidden, encoder_outputs)
+
+        # a = [batch size, src len]
+
+        a = a.unsqueeze(1)
+
+        # a = [batch size, 1, src len]
+
+        weighted = torch.bmm(a, encoder_outputs)
+
+        # weighted = [batch size, 1, hid dim]
+
+        rnn_input = torch.cat((embedded, weighted), dim=2)
+
+        # rnn_input = [1, batch size, hid dim + hid dim]
+
+        hidden = hidden.unsqueeze(0)
+        output, hidden = self.rnn(rnn_input, hidden)
+
+        # output = [seq len, batch size, dec hid dim * n directions]
+        # hidden = [n layers * n directions, batch size, dec hid dim]
+
+        embedded = embedded.squeeze(0)
+        output = output.squeeze(0)
+        weighted = weighted.squeeze(0)
+
+        prediction = self.fc_out(
+            torch.cat((output, weighted, embedded), dim=-1))
+
+        # prediction = [batch size, output dim]
+
+        return prediction.squeeze(1), hidden.squeeze(0)

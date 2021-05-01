@@ -110,8 +110,8 @@ class VQGDataset(data.Dataset):
         qa_inference_input_ids, qa_inference_input_attn_mask = self.build_inputs(self.max_oqa_inference_len, category_label, oqa_label, co_label)
 
         object_features_full_vector = self.object_features[index]  # 2054-d
-        object_features = object_features_full_vector[:2048]  # 2048-d
-        object_locations = object_features_full_vector[2048:]  # 6-d
+        object_features = object_features_full_vector[:, :2048]  # 2048-d
+        object_locations = object_features_full_vector[:, 2048:]  # 6-d
         object_features = torch.from_numpy(object_features)
         object_locations = torch.from_numpy(object_locations)
 
