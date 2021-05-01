@@ -1,16 +1,9 @@
 from torch.tensor import Tensor
-from layers import Decoder, ImageTransformerEncoder, Latent, LatentNorm
 from torch import nn
-import torch
-from transformers import BertModel, BertLMHeadModel
-from transformers.models.bert.configuration_bert import BertConfig
-from transformers.models.bert.modeling_bert import BertEmbeddings
-from transformers.models.bert.tokenization_bert import BertTokenizer
-import random
 
 
 class VQGModel(nn.Module):
-    def __init__(self, args, tokenizer: BertTokenizer) -> None:
+    def __init__(self, args, tokenizer) -> None:
         super().__init__()
 
         if self.args.variant in ("icod-icod", "icodqa-icodqa"):

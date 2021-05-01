@@ -1,3 +1,4 @@
+from transformers.models.bert.tokenization_bert import BertTokenizer
 from layers import ImageTransformerEncoder
 import torch
 import torch.nn as nn
@@ -6,7 +7,7 @@ from transformers.models.bert.modeling_bert import BertEmbeddings, BertLMHeadMod
 
 
 class BaseVQG(nn.Module):
-    def __init__(self, args, tokenizer, object_features_variant=False, latent_transformer=False):
+    def __init__(self, args, tokenizer: BertTokenizer, object_features_variant=False, latent_transformer=False):
         super().__init__()
 
         self.args = args
