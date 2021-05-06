@@ -1,10 +1,9 @@
-from operator import pos
 from variants.base import BaseVQG
 
 
-class icodf_icodf(BaseVQG):
-    def __init__(self, args, tokenizer, positional_embed_variant=False) -> None:
-        super().__init__(args, tokenizer, object_features_variant=True, positional_embed_variant=positional_embed_variant)
+class ifD_ifD(BaseVQG):
+    def __init__(self, args, tokenizer) -> None:
+        super().__init__(args, tokenizer, object_features_variant=True, positional_embed_variant=True)
 
     def forward(self, images, question_ids, question_attention_masks, input_ids, input_attention_masks, obj_features, obj_locations, *args):
         encoder_hidden_states, encoder_attention_mask, target_embedding = self.encode_image_and_text(images, input_ids, input_attention_masks, question_ids)

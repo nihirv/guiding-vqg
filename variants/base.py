@@ -7,7 +7,7 @@ from transformers.models.bert.modeling_bert import BertEmbeddings, BertLMHeadMod
 
 
 class BaseVQG(nn.Module):
-    def __init__(self, args, tokenizer: BertTokenizer, object_features_variant=False, latent_transformer=False):
+    def __init__(self, args, tokenizer: BertTokenizer, object_features_variant=False, positional_embed_variant=False, latent_transformer=False):
         super().__init__()
 
         self.args = args
@@ -28,6 +28,8 @@ class BaseVQG(nn.Module):
         if object_features_variant:
             self.image_transformer = ImageTransformerEncoder(args)
 
+        self.positional_embed = True if positional_embed_variant else False
+
         self.latent_transformer = latent_transformer
 
     def switch_latent_transformer(self, new_mode):
@@ -36,19 +38,30 @@ class BaseVQG(nn.Module):
     def forward(self, *args):
         pass
 
-    def encode_image_and_text(self, images, input_ids, input_attention_masks, question_ids, return_embeddings=True):
+    def encode_image_and_text(self, images, input_ids, input_attention_masks, question_ids, return_target_embeddings=True):
         bsz = images.shape[0]
 
         images = self.image_projection(images).unsqueeze(1)  # [B, 1, D]
 
-        position_ids = torch.zeros_like(input_ids).long().to(self.args.device)  # [B, T]
+        if not self.positional_embed:
+            # our default use case... we'll disable positional embedding because we're inputting a set of tokens, not a sequence
+            position_ids = torch.zeros_like(input_ids).long().to(self.args.device)  # [B, T]
+        else:
+            # if position_ids = None, BERTEmbeddings will automatically apply position embeddings for us
+            position_ids = None
+
         embedding = self.embeddings(
             input_ids=input_ids,
             position_ids=position_ids
         )  # [B, T, D]
 
-        image_pos_id = torch.zeros(bsz, 1).long().to(self.args.device)  # [B, 1]
-        encoder_pos_ids = torch.cat((image_pos_id, position_ids), dim=1)
+        if not self.positional_embed:
+            # if we're working with our default set -> sequence setting...
+            # we disable pos_enc by setting all position_ids to zero
+            image_pos_id = torch.zeros(bsz, 1).long().to(self.args.device)  # [B, 1]
+            encoder_pos_ids = torch.cat((image_pos_id, position_ids), dim=1)
+        else:
+            encoder_pos_ids = None
 
         image_pad_mask = torch.ones(bsz, 1).long().to(self.args.device)
         encoder_attention_mask = torch.cat((image_pad_mask, input_attention_masks), dim=1)
@@ -58,7 +71,7 @@ class BaseVQG(nn.Module):
         encoder_hidden_states = encoder_outputs.last_hidden_state  # [B, T+1, D]
 
         target_embedding = None
-        if return_embeddings:
+        if return_target_embeddings:
             target_pos_ids_single = torch.arange(question_ids.shape[-1]).to(self.args.device)  # [T_q]
             target_pos_ids_batch = target_pos_ids_single.repeat(bsz, 1)  # [B, T_q]
             target_embedding = self.embeddings(
@@ -85,7 +98,7 @@ class BaseVQG(nn.Module):
         return loss
 
     def decode_greedy_hidden_states(self, images, input_ids, input_attention_masks):
-        encoder_hidden_states, encoder_attention_mask, _ = self.encode_image_and_text(images, input_ids, input_attention_masks, question_ids=None, return_embeddings=False)
+        encoder_hidden_states, encoder_attention_mask, _ = self.encode_image_and_text(images, input_ids, input_attention_masks, question_ids=None, return_target_embeddings=False)
         return encoder_hidden_states, encoder_attention_mask
 
     def decode_greedy_obj_features(self, obj_features, obj_locations, encoder_hidden_states, encoder_attention_mask):

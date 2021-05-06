@@ -27,7 +27,7 @@ class TrainVQG(pl.LightningModule):
         self.args = args
         self.tokenizer = tokenizer
         self.latent_transformer = False
-        self.model = VQGModel(args, self.tokenizer, self.latent_transformer)
+        self.model = VQGModel(args, self.tokenizer)
 
         self.iter = 0
         self.kliter = 0
@@ -44,18 +44,18 @@ class TrainVQG(pl.LightningModule):
         images = batch["images"]
         question_ids = batch["question_ids"]
         question_attention_masks = batch["question_attention_masks"]
-        input_ids = batch["input_ids"]
-        input_attention_masks = batch["input_attention_masks"]
+        input_ids = batch["qa_inference_ids"]
+        input_attention_masks = batch["qa_inference_attention_masks"]
         object_features = batch["object_features"]
         object_locations = batch["object_locations"]
 
-        if self.args.variant.split("-")[0] in ("icod", "icodf"):
-            input_ids = batch["legal_ids"]
-            input_attention_masks = batch["legal_attention_masks"]
+        if self.args.variant in ("ifD-ifD"):  # RETRAIN THIS
+            input_ids = batch["caption_ids"]
+            input_attention_masks = batch["caption_attention_masks"]
 
-        if val:
-            input_ids = batch["legal_ids"]
-            input_attention_masks = batch["legal_attention_masks"]
+        if self.args.variant in ("icf-icf"):
+            input_ids = batch["category_only_ids"]
+            input_attention_masks = batch["category_only_attn_masks"]
 
         loss = self.model(images, question_ids, question_attention_masks, input_ids, input_attention_masks, object_features, object_locations)
         return loss
@@ -174,6 +174,14 @@ class TrainVQG(pl.LightningModule):
             inference_ids = batch["qa_inference_ids"]
             inference_attention_masks = batch["qa_inference_attention_masks"]
 
+        if self.args.variant in ("ifD-ifD"):
+            inference_ids = batch["caption_ids"]
+            inference_attention_masks = batch["caption_attention_masks"]
+
+        if self.args.variant in ("icf-icf"):
+            inference_ids = batch["category_only_ids"]
+            inference_attention_masks = batch["category_only_attn_masks"]
+
         decoded_questions = [self.tokenizer.decode(to_decode) for to_decode in question_ids]
         decoded_inputs = [self.tokenizer.decode(to_decode) for to_decode in inference_ids]
 
@@ -190,8 +198,11 @@ class TrainVQG(pl.LightningModule):
 
             if i < print_lim:
                 print("Image ID:\t", image_ids[i])
-                print("Category:\t", curr_input.split()[0])
-                print("KW inputs:\t", " ".join(curr_input.split()[1:]))
+                if not self.args.variant in ("ifD-ifD"):
+                    print("Category:\t", curr_input.split()[0])
+                    print("KW inputs:\t", " ".join(curr_input.split()[1:]))
+                else:
+                    print("Caption:", " ".join(curr_input.split()))
                 print("Generated:\t", generated_q)
                 print("Real Ques:\t", real_q)
                 print()
@@ -300,7 +311,7 @@ if __name__ == "__main__":
     trainVQG = TrainVQG(args, tokenizer)  # .to(device)
 
     trainer = pl.Trainer(max_steps=args.total_training_steps, gradient_clip_val=5,
-                         val_check_interval=500, limit_val_batches=500, callbacks=[early_stop_callback], gpus=1)
+                         val_check_interval=500, limit_val_batches=400, callbacks=[early_stop_callback], gpus=1)
 
     trainer.fit(trainVQG, data_loader, val_data_loader)
 

@@ -35,6 +35,8 @@ class VQGDataset(data.Dataset):
         self.max_oqa_inference_len = 11
         self.max_q_len = 26
         self.max_cap_len = 30
+        self.STOP_WORDS = ["?", ".", "i", "me", "my", "myself", "we", "our", "ours", "ourselves", "you", "your", "yours", "yourself", "yourselves", "it", "its", "itself", "them", "theirs", "themselves", "what", "which", "who", "whom", "this", "that", "these", "those", "am", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "having", "do", "does", "did", "doing", "a", "an", "the", "and", "but", "if", "or", "because", "as", "until", "while", "of", "at", "by", "for",
+                           "with", "about", "against", "between", "into", "through", "during", "before", "after", "above", "below", "to", "from", "up", "down", "in", "out", "on", "off", "over", "under", "again", "further", "then", "once", "here", "there", "when", "where", "why", "how", "all", "any", "both", "each", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "s", "t", "can", "will", "just", "don", "should", "now"]
 
         self.cat2name = sorted(
             json.load(open("data/processed/cat2name.json", "r")))
@@ -68,6 +70,9 @@ class VQGDataset(data.Dataset):
         args_ids, args_attn_mask = self.tokenize_and_pad(args_string, len)
         return args_ids, args_attn_mask
 
+    def filter_stop_words(self, list_to_filter):
+        return [item for item in list_to_filter if item not in self.STOP_WORDS]
+
     def __getitem__(self, index):
         """Returns one data pair (image and caption).
         """
@@ -96,10 +101,11 @@ class VQGDataset(data.Dataset):
 
         category = self.answer_types[index]
         category_label = [self.cat2name[category]]                   # ['binary']
-        obj_label = list(self.obj_labels[index])                    # ['trousers', 'swimming', 'racket', 'jeans', 'footwear', 'furniture', '<EMPTY>', '<EMPTY>', '<EMPTY>', '<EMPTY>']
-        co_label = list(self.caption_labels_from_object[index])     # ['court', 'holding', 'racket', 'on', 'a']
-        oqa_label = list(self.objects_from_qa_labels[index])        # ['footwear', 'trousers', 'racket']
-        qao_label = list(self.qa_labels_from_object[index])         # ['yes', 'play', 'can', 'he', '?']
+        # ['trousers', 'swimming', 'racket', 'jeans', 'footwear', 'furniture', '<EMPTY>', '<EMPTY>', '<EMPTY>', '<EMPTY>']
+        obj_label = self.filter_stop_words(list(self.obj_labels[index]))
+        co_label = self.filter_stop_words(list(self.caption_labels_from_object[index]))  # ['court', 'holding', 'racket', 'on', 'a']
+        oqa_label = self.filter_stop_words(list(self.objects_from_qa_labels[index]))     # ['footwear', 'trousers', 'racket']
+        qao_label = self.filter_stop_words(list(self.qa_labels_from_object[index]))      # ['yes', 'play', 'can', 'he', '?']
 
         # all_train_inputs # category label, object labels, co, oqa, qao, (caption)
         # legal_inputs=inference_inputs # category label, object labels, co, (caption)
@@ -119,7 +125,12 @@ class VQGDataset(data.Dataset):
         image = self.images[image_index]
         image_id = self.image_ids[index]
 
-        return image_id, torch.from_numpy(image), encoded_question_id, encoded_question_attention_mask, all_train_input_ids, all_train_input_attn_mask, legal_input_ids, legal_input_attn_mask, qa_inference_input_ids, qa_inference_input_attn_mask, object_features, object_locations
+        category_only_id, category_only_attn_mask = self.tokenize_and_pad(category_label[0], 3)
+
+        return image_id, torch.from_numpy(image), encoded_question_id, encoded_question_attention_mask, \
+            all_train_input_ids, all_train_input_attn_mask, legal_input_ids, legal_input_attn_mask, \
+            qa_inference_input_ids, qa_inference_input_attn_mask, object_features, object_locations, \
+            encded_caption_id, encoded_caption_attention_mask, category_only_id, category_only_attn_mask
 
     def __len__(self):
         if self.max_examples is not None:
@@ -132,8 +143,11 @@ class VQGDataset(data.Dataset):
 
 def collate_fn(data):
 
-    image_ids, images, encoded_question_id, encoded_question_attention_mask, all_train_input_ids, all_train_input_attn_mask, legal_input_ids, legal_input_attn_mask, qa_inference_input_ids, qa_inference_input_attn_mask, object_features, object_locations = list(
-        zip(*data))
+    image_ids, images, encoded_question_id, encoded_question_attention_mask, \
+        all_train_input_ids, all_train_input_attn_mask, legal_input_ids, legal_input_attn_mask, \
+        qa_inference_input_ids, qa_inference_input_attn_mask, object_features, object_locations, \
+        encded_caption_id, encoded_caption_attention_mask, category_only_id, category_only_attn_mask = list(
+            zip(*data))
 
     images = torch.stack(images).float()
     question_ids = torch.stack(encoded_question_id).long()
@@ -146,6 +160,10 @@ def collate_fn(data):
     qa_inference_attention_masks = torch.stack(qa_inference_input_attn_mask).long()
     object_features = torch.stack(object_features)
     object_locations = torch.stack(object_locations)
+    caption_ids = torch.stack(encded_caption_id).long()
+    caption_attention_masks = torch.stack(encoded_caption_attention_mask).long()
+    category_only_ids = torch.stack(category_only_id).long()
+    category_only_attn_masks = torch.stack(category_only_attn_mask).long()
 
     return {"images": images,
             "image_ids": image_ids,
@@ -158,7 +176,11 @@ def collate_fn(data):
             "qa_inference_ids": qa_inference_ids,
             "qa_inference_attention_masks": qa_inference_attention_masks,
             "object_features": object_features,
-            "object_locations": object_locations
+            "object_locations": object_locations,
+            "caption_ids": caption_ids,
+            "caption_attention_masks": caption_attention_masks,
+            "category_only_ids": category_only_ids,
+            "category_only_attn_masks": category_only_attn_masks
             }
 
 
