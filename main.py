@@ -13,6 +13,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from transformers.models.bert.tokenization_bert import BertTokenizer
 from nlg_eval.nlgeval import NLGEval
 from TextGenerationEvaluationMetrics.multiset_distances import MultisetDistances
+from TextGenerationEvaluationMetrics.bert_distances import FBD
 from operator import itemgetter
 import math
 
@@ -39,16 +40,29 @@ class TrainVQG(pl.LightningModule):
         self.msjs = []
         self.fbds = []
 
+        self.final_output = {"image_ids":[], "gts":[], "preds":[], "cat":[], "objs":[]}
+
+        self.outputs_to_save = {"11111111111": [{"category": "object",
+                "objects": "man",
+                "generated_q": "what is the man doing?",
+                "real_q": "what is the man doing?",
+                "type": "implicit"}]}
+
     def forward(self, batch, val=False):
 
         images = batch["images"]
         question_ids = batch["question_ids"]
         question_attention_masks = batch["question_attention_masks"]
-        input_ids = batch["qa_inference_ids"]
-        input_attention_masks = batch["qa_inference_attention_masks"]
+        qa_ids = batch["qa_ids"]
+        qa_attention_masks = batch["qa_attention_masks"]
         object_features = batch["object_features"]
         object_locations = batch["object_locations"]
+        object_embeddings = batch["object_embeddings"]
 
+        input_ids = batch["question_ids"]
+        input_attention_masks = batch["question_attention_masks"]
+
+        bs = images.size()[0]
         if self.args.variant in ("ifD-ifD"):  # RETRAIN THIS
             input_ids = batch["caption_ids"]
             input_attention_masks = batch["caption_attention_masks"]
@@ -56,6 +70,18 @@ class TrainVQG(pl.LightningModule):
         if self.args.variant in ("icf-icf"):
             input_ids = batch["category_only_ids"]
             input_attention_masks = batch["category_only_attn_masks"]
+
+        if self.args.variant in ("icod-icod-l,lg,lv,ckl"):
+            input_ids = qa_ids
+            input_attention_masks = qa_attention_masks
+
+            category_id = batch["categories"]
+            category_one_hot = category_id.view(-1)
+
+            # if val:
+            #     input_ids = generative_ids
+            #     input_attention_masks = generative_attention_masks
+
 
         loss = self.model(images, question_ids, question_attention_masks, input_ids, input_attention_masks, object_features, object_locations)
         return loss
@@ -123,7 +149,7 @@ class TrainVQG(pl.LightningModule):
         #     print(k, "\t", rounded_val)
 
         print("********** DECODING OBJECT SELECTED QUESTIONS ********** ")
-        qa_decode_scores = self.decode_and_print(batch, qa_decode=True)
+        qa_decode_scores, _ = self.decode_and_print(batch, qa_decode=True)
         for k, v in qa_decode_scores.items():
             rounded_val = np.round(np.mean(v) * 100, 4)
             self.log("val_qa_decode_"+k, rounded_val)
@@ -138,16 +164,34 @@ class TrainVQG(pl.LightningModule):
         print("This was validating after iteration {}".format(self.iter))
 
     def test_step(self, batch, batch_idx):
-        scores = self.decode_and_print(batch, qa_decode=True, val=False)
+        scores, final_dict = self.decode_and_print(batch, qa_decode=True, val=True)
         for k, v in scores.items():
             rounded_val = np.round(np.mean(v) * 100, 4)
             print(k, "\t", rounded_val)
 
+        print("#"*100)
         for k, v in scores.items():
             if k not in self.test_scores.keys():
                 self.test_scores[k] = []
             else:
                 self.test_scores[k].append(v)
+            print(k, np.mean(self.test_scores[k]))
+
+        # for k, v in final_dict.items():
+        #     if k == "objs":
+        #         for item in v:
+        #             self.final_output[k].append(item)
+        #     else:
+        #         self.final_output[k].extend(v)
+        
+        # image_ids1 = self.final_output["image_ids"]
+        # gts1 = self.final_output["gts"]
+        # preds1 = self.final_output["preds"]
+        # print(len(image_ids1))
+        # print(len(gts1))
+        # print(len(preds1))
+        # print(self.final_output["objs"])
+        # print(self.final_output["cat"])
 
         return scores
 
@@ -166,48 +210,114 @@ class TrainVQG(pl.LightningModule):
         question_ids = batch["question_ids"]
         object_features = batch["object_features"]
         object_locations = batch["object_locations"]
+        object_embeddings = batch["object_embeddings"]
 
-        inference_ids = batch["legal_ids"]
-        inference_attention_masks = batch["legal_attention_masks"]
+        inference_ids = batch["question_ids"]
+        multiple_question_ids = batch["multiple_question_ids"]
 
-        if qa_decode:
-            inference_ids = batch["qa_inference_ids"]
-            inference_attention_masks = batch["qa_inference_attention_masks"]
+        input_ids = batch["qa_ids"]
+        input_attention_masks = batch["qa_attention_masks"]
 
-        if self.args.variant in ("ifD-ifD"):
-            inference_ids = batch["caption_ids"]
-            inference_attention_masks = batch["caption_attention_masks"]
+        category_id = batch["categories"]
+        category_one_hot = category_id.view(-1)
+        # print(question_ids.shape)
+        # print(multiple_question_ids)
 
-        if self.args.variant in ("icf-icf"):
-            inference_ids = batch["category_only_ids"]
-            inference_attention_masks = batch["category_only_attn_masks"]
+        cat2name = batch["cat2name"][0]
+        obj_labels = batch["obj_label"]
+
+        # inference_ids = batch["legal_ids"]
+        # inference_attention_masks = batch["legal_attention_masks"]
+
+        # if qa_decode:
+        #     inference_ids = batch["qa_inference_ids"]
+        #     inference_attention_masks = batch["qa_inference_attention_masks"]
+
+        # if self.args.variant in ("ifD-ifD"):
+        #     inference_ids = batch["caption_ids"]
+        #     inference_attention_masks = batch["caption_attention_masks"]
+
+        # if self.args.variant in ("icf-icf"):
+        #     inference_ids = batch["category_only_ids"]
+        #     inference_attention_masks = batch["category_only_attn_masks"]
 
         decoded_questions = [self.tokenizer.decode(to_decode) for to_decode in question_ids]
         decoded_inputs = [self.tokenizer.decode(to_decode) for to_decode in inference_ids]
 
+        # decoded_multiple_questions = [self.tokenizer.decode(to_decode) for to_decode in multiple_question_ids]
+
         preds = []
         gts = []
-        decoded_sentences = self.model.decode_greedy(images, inference_ids, inference_attention_masks, object_features, object_locations)
+        gts_multiple = []
+        pred_objs = []
+        pred_cat = []
+        # decoded_sentences, max_obj, max_cat = self.model.decode_greedy(images, input_ids, input_attention_masks, object_embeddings, object_features, object_locations, category_target=category_one_hot)
+        decoded_sentences = self.model.decode_greedy(images, input_ids, input_attention_masks, object_features, object_locations)
         for i, sentence in enumerate(decoded_sentences):
             curr_input = self.filter_special_tokens(decoded_inputs[i])
             generated_q = self.filter_special_tokens(sentence)
             real_q = self.filter_special_tokens(decoded_questions[i])
+            
 
-            gts.append(real_q)
+            multiple_real_q = [q.lower() for q in multiple_question_ids[i]]
+            # print(multiple_real_q)
+            # print(real_q)
+            # print(generated_q)
+            gts_multiple.append(multiple_real_q)
+
+            gts.append([real_q])
             preds.append(generated_q)
 
+            image_id = str(image_ids[i])
+            # cat = cat2name[max_cat[i].data.item()]
+            # pred_cat.append(cat)
+            # objs = max_obj[i].data.tolist()
+
+            # obj_label = obj_labels[i]
+            # labels = list(set([obj_label[item] for item in objs]))[:2]
+            # pred_objs.append(labels)
+
             if i < print_lim:
-                print("Image ID:\t", image_ids[i])
-                if not self.args.variant in ("ifD-ifD"):
-                    print("Category:\t", curr_input.split()[0])
-                    print("KW inputs:\t", " ".join(curr_input.split()[1:]))
-                else:
-                    print("Caption:", " ".join(curr_input.split()))
+                print("Image ID:\t", image_id)
+                # if not self.args.variant in ("ifD-ifD"):
+                #     print("Category:\t", curr_input.split()[0])
+                #     print("KW inputs:\t", " ".join(curr_input.split()[1:]))
+                # else:
+                #     print("Caption:", " ".join(curr_input.split()))
+
+                # print("Pred Category:\t", cat)
+                # print("Pred Objects:\t", " ".join(labels))
+                # print(obj_label)
                 print("Generated:\t", generated_q)
                 print("Real Ques:\t", real_q)
                 print()
 
-        scores = self.nlge.compute_metrics(ref_list=[gts], hyp_list=preds)
+            # if not val:
+            if image_id not in self.outputs_to_save.keys():
+                self.outputs_to_save[image_id] = []
+            value_obj = {
+                # "category": cat,
+                # "objects": " ".join(labels),
+                "generated_q": generated_q,
+                "real_q": real_q,
+                "type": "baseline"
+            }
+            self.outputs_to_save[image_id].append(value_obj) 
+
+        # print(len(preds))
+        # print(len(gts))
+        # print(len(gts_multiple))
+
+        scores = self.nlge.compute_metrics(ref_list=gts, hyp_list=preds)
+        scores_multiple = self.nlge.compute_metrics(ref_list=gts_multiple, hyp_list=preds)
+        print(scores_multiple)
+        scores.update({"Bleu_1_multiple": scores_multiple["Bleu_1"]})
+        scores.update({"Bleu_2_multiple": scores_multiple["Bleu_2"]})
+        scores.update({"Bleu_3_multiple": scores_multiple["Bleu_3"]})
+        scores.update({"Bleu_4_multiple": scores_multiple["Bleu_4"]})
+        scores.update({"METEOR_multiple": scores_multiple["METEOR"]})
+        scores.update({"ROUGE_L_multiple": scores_multiple["ROUGE_L"]})
+        scores.update({"CIDEr_multiple": scores_multiple["CIDEr"]})
 
         msd = MultisetDistances(references=gts)
         msj_distance = msd.get_jaccard_score(sentences=preds)
@@ -215,6 +325,12 @@ class TrainVQG(pl.LightningModule):
         for k in msj_distance.keys():
             new_msj_distance["msj_{}".format(k)] = msj_distance[k]
         scores.update(new_msj_distance)
+
+
+        # fbd = FBD(references=gts, model_name="bert-base-uncased", bert_model_dir="/homes/zw5018/.cache/huggingface/transformers/")
+        # fbd_distance_sentences = fbd.get_score(sentences=preds)
+        # print(fbd_distance_sentences)
+        # scores.update({"fbd": fbd_distance_sentences})
 
         if val:
             for k, v in scores.items():
@@ -225,6 +341,9 @@ class TrainVQG(pl.LightningModule):
                     self.msjs.append((self.iter, rounded_val))
                 elif k == "fbd":
                     self.fbds.append((self.iter, rounded_val))
+
+            # min_fbds = min(self.fbds, key=itemgetter(1))
+            # print("SMALLEST FBD SCORE WAS: {} FROM ITER {}".format(min_fbds[1], min_fbds[0]))
 
         max_bleu = max(self.bleus, key=itemgetter(1))
         max_msjs = max(self.msjs, key=itemgetter(1))
@@ -237,7 +356,16 @@ class TrainVQG(pl.LightningModule):
 
         print("Model Variant:", self.args.variant)
 
-        return scores
+
+        final_dict = {"image_ids":[], "gts":[], "preds":[], "cat":[], "objs":[]}
+        # final_dict["image_ids"].extend(image_ids)
+        # final_dict["gts"].extend(gts)
+        # final_dict["preds"].extend(preds)
+        # final_dict["cat"].extend(pred_cat)
+        # for item in pred_objs:
+        #     final_dict["objs"].append(item)
+
+        return scores, final_dict
 
     def filter_special_tokens(self, decoded_sentence_string):
         decoded_sentence_list = decoded_sentence_string.split()
@@ -273,7 +401,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--hidden_dim", type=int, default=768,
                         help="Hidden dimensionality of the model")
-    parser.add_argument("--latent_dim", type=int, default=768,
+    parser.add_argument("--num_categories", type=int, default=16,
+                        help="Hidden dimensionality of the model")
+    parser.add_argument("--latent_dim", type=int, default=36,
                         help="Hidden dimensionality of the model")
     parser.add_argument("--lr", type=float, default=3e-5,
                         help="Learning rate of the network")
@@ -309,9 +439,10 @@ if __name__ == "__main__":
         os.getcwd(), args.val_dataset), tokenizer, args.batch_size, shuffle=False, num_workers=8)
 
     trainVQG = TrainVQG(args, tokenizer)  # .to(device)
+    print(trainVQG.final_output)
 
     trainer = pl.Trainer(max_steps=args.total_training_steps, gradient_clip_val=5,
-                         val_check_interval=500, limit_val_batches=400, callbacks=[early_stop_callback], gpus=1)
+                         val_check_interval=500, limit_val_batches=350, callbacks=[early_stop_callback], gpus=1)
 
     trainer.fit(trainVQG, data_loader, val_data_loader)
 
@@ -321,3 +452,14 @@ if __name__ == "__main__":
 
     for k, scores in trainVQG.test_scores.items():
         print(k, np.mean(scores))
+
+    image_ids1 = trainVQG.final_output["image_ids"]
+    gts1 = trainVQG.final_output["gts"]
+    preds1 = trainVQG.final_output["preds"]
+    print(len(image_ids1))
+    print(len(preds1))
+    print(len(gts1))
+    with open('output.txt', 'w') as out:
+        for i, imgid in enumerate(image_ids1):
+            sss = imgid + "\t" + gts1[i] + "\t" + preds1[i] + "\n"
+            out.write(sss)

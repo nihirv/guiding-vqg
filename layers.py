@@ -21,30 +21,32 @@ class Latent(nn.Module):
         )
 
         self.mean_logvar_prior = nn.Sequential(
-            nn.Linear(args.hidden_dim, args.latent_dim*2),
+            nn.Linear(args.latent_dim, args.latent_dim*2),
             *copy.deepcopy(latent_layer_network_architecture)
 
         )
         self.mean_logvar_posterior = nn.Sequential(
-            nn.Linear(args.hidden_dim*2, args.latent_dim*2),
+            nn.Linear(args.latent_dim, args.latent_dim*2),
             *copy.deepcopy(latent_layer_network_architecture)
         )
 
-    def forward(self, x, x_p):
+    def forward(self, x, x_p=None):
         mean_logvar_prior = self.mean_logvar_prior(x)
-        mean_prior, logvar_prior = mean_logvar_prior[:, :self.args.latent_dim], mean_logvar_prior[:, self.args.latent_dim:]
+        mean_prior, logvar_prior = mean_logvar_prior[:,:,:self.args.latent_dim], mean_logvar_prior[:,:,self.args.latent_dim:]
 
         eps = torch.randn(mean_prior.size()).to(self.args.device)
         std = torch.exp(0.5 * logvar_prior)
-        z = eps * std + mean_prior
+        # z = eps * std + mean_prior
+        z = mean_prior
         kld_loss = 0
 
         mean_posterior, logvar_posterior = None, None
         if x_p is not None:  # if x_p IS None, then we're in inference mode.
-            mean_logvar_posterior = self.mean_logvar_posterior(torch.cat((x_p, x), dim=-1))
-            mean_posterior, logvar_posterior = mean_logvar_posterior[:, :self.args.latent_dim], mean_logvar_posterior[:, self.args.latent_dim:]
+            mean_logvar_posterior = self.mean_logvar_posterior(x_p)
+            mean_posterior, logvar_posterior = mean_logvar_posterior[:,:,:self.args.latent_dim], mean_logvar_posterior[:,:,self.args.latent_dim:]
 
-            kld_loss = gaussian_kld(mean_posterior, logvar_posterior, mean_prior, logvar_prior)
+            for i in range(mean_posterior.size()[1]):
+                kld_loss += gaussian_kld(mean_posterior[:,i], logvar_posterior[:,i], mean_prior[:,i], logvar_prior[:,i])
             kld_loss = torch.mean(kld_loss)
 
             std = torch.exp(0.5 * logvar_posterior)
@@ -150,12 +152,15 @@ class ImageTransformerEncoder(transformer.TransformerEncoder):
         self.args = args
 
         super().__init__(args, None, FeatureProjection(args))
-        self.spatial_encoding = nn.Linear(6, args.hidden_dim)
+        self.spatial_encoding = nn.Linear(5, args.hidden_dim)
         self.dropout = nn.Dropout(args.dropout)
 
     def forward(self, image_features, feature_locations):
         # embed tokens and positions
+        # print(image_features, image_features.shape)
         x = self.embed_scale * self.embed_tokens(image_features)
+
+        # print(feature_locations.shape)
 
         if self.spatial_encoding is not None:
             x += self.spatial_encoding(feature_locations)

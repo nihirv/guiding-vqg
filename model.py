@@ -33,5 +33,5 @@ class VQGModel(nn.Module):
         loss, kld = self.model(images, question_ids, question_attention_masks, input_ids, input_attention_masks, obj_features, obj_locations)
         return loss, kld
 
-    def decode_greedy(self, images, input_ids, input_attention_masks, obj_features, obj_locations):
+    def decode_greedy(self, images, input_ids, input_attention_masks, obj_features, obj_locations, category_target=None):
         return self.model.decode_greedy(images, input_ids, input_attention_masks, obj_features, obj_locations)

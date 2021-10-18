@@ -25,8 +25,8 @@ class BaseVQG(nn.Module):
         self.text_encoder = BertModel.from_pretrained("bert-base-uncased", return_dict=True)
         self.decoder = BertLMHeadModel.from_pretrained('bert-base-uncased', is_decoder=True, use_cache=True, add_cross_attention=True)
 
-        if object_features_variant:
-            self.image_transformer = ImageTransformerEncoder(args)
+        # if object_features_variant:
+        self.image_transformer = ImageTransformerEncoder(args)
 
         self.positional_embed = True if positional_embed_variant else False
 
@@ -81,6 +81,45 @@ class BaseVQG(nn.Module):
 
         return encoder_hidden_states, encoder_attention_mask, target_embedding
 
+    def encode_image_and_object(self, images, object_embeddings, question_ids, return_target_embeddings=True):
+        bsz = images.shape[0]
+        images = self.image_projection(images).unsqueeze(1)  # [B, 1, D]
+
+        # if not self.positional_embed:
+        #     # our default use case... we'll disable positional embedding because we're inputting a set of tokens, not a sequence
+        #     position_ids = torch.zeros_like(input_ids).long().to(self.args.device)  # [B, T]
+        # else:
+        #     # if position_ids = None, BERTEmbeddings will automatically apply position embeddings for us
+        #     position_ids = None
+
+        # embedding = self.embeddings(
+        #     input_ids=input_ids,
+        #     position_ids=position_ids
+        # )  # [B, T, D]
+        embedding = object_embeddings
+        image_pos_id = torch.zeros(bsz, 1).long().to(self.args.device)
+        position_ids = torch.ones(bsz, 36).long().to(self.args.device)
+        encoder_pos_ids = torch.cat((image_pos_id, position_ids), dim=1)
+
+        image_pad_mask = torch.ones(bsz, 1).long().to(self.args.device)
+        input_attention_masks = torch.ones(bsz, 36).long().to(self.args.device)
+        encoder_attention_mask = torch.cat((image_pad_mask, input_attention_masks), dim=1)
+
+        encoder_inputs = torch.cat((images, embedding), dim=1)
+        encoder_outputs = self.text_encoder(inputs_embeds=encoder_inputs, position_ids=encoder_pos_ids, attention_mask=encoder_attention_mask)
+        encoder_hidden_states = encoder_outputs.last_hidden_state  # [B, T+1, D]
+
+        target_embedding = None
+        if return_target_embeddings:
+            target_pos_ids_single = torch.arange(question_ids.shape[-1]).to(self.args.device)  # [T_q]
+            target_pos_ids_batch = target_pos_ids_single.repeat(bsz, 1)  # [B, T_q]
+            target_embedding = self.embeddings(
+                input_ids=question_ids,
+                position_ids=target_pos_ids_batch
+            )  # [B, T_q, D]
+
+        return encoder_hidden_states, encoder_attention_mask, target_embedding
+
     def encode_object_features(self, obj_features, obj_locations, encoder_hidden_states, encoder_attention_mask):
         bsz = obj_features.shape[0]
         encoded_objects, _ = self.image_transformer(obj_features, obj_locations)  # [B, 36, D]
@@ -88,7 +127,10 @@ class BaseVQG(nn.Module):
         object_mask = torch.ones(bsz, 36).long().to(self.args.device)
         encoder_hidden_states = torch.cat((encoder_hidden_states, encoded_objects), dim=1)
         encoder_attention_mask = torch.cat((encoder_attention_mask, object_mask), dim=1)
-        return encoder_hidden_states, encoder_attention_mask
+
+        output = encoder_hidden_states[:, 0] + encoded_objects[:, 0]
+
+        return encoder_hidden_states, encoder_attention_mask, output
 
     def forward_decode(self, target_embedding, question_ids, question_attention_masks, encoder_hidden_states, encoder_attention_mask):
         outputs = self.decoder(inputs_embeds=target_embedding, labels=question_ids, attention_mask=question_attention_masks,
@@ -97,8 +139,8 @@ class BaseVQG(nn.Module):
 
         return loss
 
-    def decode_greedy_hidden_states(self, images, input_ids, input_attention_masks):
-        encoder_hidden_states, encoder_attention_mask, _ = self.encode_image_and_text(images, input_ids, input_attention_masks, question_ids=None, return_target_embeddings=False)
+    def decode_greedy_hidden_states(self, images, object_embeddings):
+        encoder_hidden_states, encoder_attention_mask, _ = self.encode_image_and_object(images, object_embeddings, question_ids=None, return_target_embeddings=False)
         return encoder_hidden_states, encoder_attention_mask
 
     def decode_greedy_obj_features(self, obj_features, obj_locations, encoder_hidden_states, encoder_attention_mask):
