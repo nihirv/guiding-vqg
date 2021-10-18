@@ -136,6 +136,19 @@ def read_image_features_tsv(tsv_in_file, FIELDNAMES=['image_id', 'image_w', 'ima
     return image_feature_data
 
 
+def normalize_pretrained_boxes(boxes, features, img_h, img_w, num_boxes=36):
+    # boxes is num_boxes x 4
+    # feathres is num_boxes x 2048
+    reshaped_boxes = boxes.reshape((num_boxes, -1))  # [36, 4]
+    features = features.reshape((num_boxes, -1))  # [36, 2048]
+    boxes = copy.deepcopy(reshaped_boxes)
+    boxes[:, [0, 2]] /= int(img_w)
+    boxes[:, [1, 3]] /= int(img_h)
+    areas = (boxes[:, 2] - boxes[:, 0]) * \
+        (boxes[:, 3] - boxes[:, 1])
+    return np.c_[boxes, areas], features
+
+
 def extract_labels_from_scores(mean_similarity_array, label_list, set_k):
 
     top_args = list(np.argsort(-mean_similarity_array))
@@ -221,6 +234,14 @@ def save_dataset(image_dir, questions, annotations, raw_data_dir, ans2cat, outpu
         "{}/pred.coco_caption.train.beam5.max20.odlabels.tsv".format(raw_data_dir)
     ]
 
+    bottom_up_features_filepaths = [
+        "{}/mscoco_imgfeat/train2014_obj36.tsv".format(raw_data_dir),
+        "{}/mscoco_imgfeat/val2014_obj36.tsv".format(raw_data_dir),
+        # "{}/mscoco_imgfeat/test2015_obj36.tsv".format(raw_data_dir),
+    ]
+    bottom_up_object_vocab = "{}/mscoco_imgfeat/objects_vocab.txt".format(raw_data_dir)
+    bottom_up_attributes_vocab = "{}/mscoco_imgfeat/attributes_vocab.txt".format(raw_data_dir)
+
     print("Loading object file...")
     d = []
     set_keys = set()
@@ -259,8 +280,50 @@ def save_dataset(image_dir, questions, annotations, raw_data_dir, ans2cat, outpu
     print("Building captions/features dataframe...")
     del d
     df_caption_features = df.set_index("id")
-    print(df_caption_features.head())
     print("Loaded captions/features file!")
+
+    print("Loading bottom-up features files...")
+    d = []
+    for filepath in bottom_up_features_filepaths:
+        print("Loading file:", filepath)
+        with open(filepath, "r") as f:
+            for i, line in enumerate(tqdm(f)):
+                line = tuple(line.split("\t"))
+                image_id = int(line[0].split("_")[-1])
+                img_h = line[1]
+                img_w = line[2]
+                objects_id = np.frombuffer(base64.b64decode(line[3]), dtype=np.int64)
+                objects_conf = np.frombuffer(base64.b64decode(line[4]), dtype=np.float32)
+                attrs_id = np.frombuffer(base64.b64decode(line[5]), dtype=np.int64)
+                attrs_conf = np.frombuffer(base64.b64decode(line[6]), dtype=np.float32)
+                # ignore num_boxes as always 36.
+                boxes = np.frombuffer(base64.b64decode(line[8]), dtype=np.float32)
+                features = np.frombuffer(base64.b64decode(line[9]), dtype=np.float32)
+                normalized_boxes, features = normalize_pretrained_boxes(boxes, features, img_h, img_w, num_objects)
+                d.append((image_id, img_h, img_w, objects_id, objects_conf, attrs_id, attrs_conf, normalized_boxes, features))
+
+    df = pd.DataFrame(d, columns=["img_id", "img_h", "img_w", "objects_id", "objects_conf", "attrs_id", "attrs_conf", "boxes", "features"])
+    df_bottom_up = df.set_index("img_id")
+    del d
+
+    with open(bottom_up_object_vocab, "r") as f:
+        bottom_up_object_vocab_list = []
+        for line in f:
+            try:
+                line_list = line.strip().split(",")
+                bottom_up_object_vocab_list.append(line_list[0])
+            except:
+                bottom_up_object_vocab_list.append(line)
+
+    with open(bottom_up_attributes_vocab, "r") as f:
+        bottom_up_attributes_vocab_list = []
+        for line in f:
+            try:
+                line_list = line.strip().split(",")
+                bottom_up_attributes_vocab_list.append(line_list[0])
+            except:
+                bottom_up_attributes_vocab_list.append(line)
+    print("Loaded bottom-up files!")
 
     # df = pd.merge(df_objects, df_caption_features, on="id").set_index("id")
 
@@ -279,6 +342,8 @@ def save_dataset(image_dir, questions, annotations, raw_data_dir, ans2cat, outpu
         "image_indices", (total_questions,), dtype='i')
     d_images = h5file.create_dataset(
         "images", (total_images, 512), dtype='f')
+    d_answers = h5file.create_dataset(
+        "answers", (total_questions,), dtype=string_dt)
     d_answer_types = h5file.create_dataset(
         "answer_types", (total_questions,), dtype='i')
     d_image_ids = h5file.create_dataset(
@@ -300,12 +365,20 @@ def save_dataset(image_dir, questions, annotations, raw_data_dir, ans2cat, outpu
     d_qa_labels_from_object = h5file.create_dataset(
         "qa_labels_from_object", (total_questions, set_k), dtype=string_dt
     )
+    d_bottom_up_obj_features = h5file.create_dataset(
+        "bottom_up_obj_features", (total_questions, num_objects, 2048), dtype='f')
+    d_bottom_up_obj_locations = h5file.create_dataset(
+        "bottom_up_obj_locations", (total_questions, num_objects, 5), dtype='f')
+    d_bottom_up_obj_labels = h5file.create_dataset(
+        "bottom_up_obj_labels", (total_questions, 36), dtype=string_dt)
+    d_bottom_up_attr_labels = h5file.create_dataset(
+        "bottom_up_attr_labels", (total_questions, 36), dtype=string_dt)
 
     # Create the transforms we want to apply to every image.
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.ToPILImage(),
-        transforms.RandomResizedCrop(224,
+        transforms.RandomResizedCrop(im_size,
                                      scale=(1.00, 1.2),
                                      ratio=(0.75, 1.3333333333333333)),
         transforms.ToTensor(),
@@ -328,20 +401,15 @@ def save_dataset(image_dir, questions, annotations, raw_data_dir, ans2cat, outpu
         if question_id not in qid2ans:
             continue
         if image_id not in done_img2idx:
-
             try:
                 path = "COCO_%s2014_%d.jpg" % (train_or_val, image_id)
                 image = Image.open(os.path.join(
                     image_dir, path)).convert('RGB')
-                image_for_predictor = cv2.imread(os.path.join(
-                    image_dir, path))
             except IOError:
                 try:
                     path = "COCO_%s2014_%012d.jpg" % (train_or_val, image_id)
                     image = Image.open(os.path.join(
                         image_dir, path)).convert('RGB')
-                    image_for_predictor = cv2.imread(os.path.join(
-                        image_dir, path))
                 except:
                     print("COULD NOT FIND IMAGE {}".format(path))
                     continue
@@ -353,10 +421,7 @@ def save_dataset(image_dir, questions, annotations, raw_data_dir, ans2cat, outpu
             done_img2idx[image_id] = i_index
             i_index += 1
 
-        question = entry["question"]
-        answer = qid2ans[question_id]
         caption = df_caption_features.loc[image_id]["captions"]
-        # object_labels = df.loc[image_id]["objects"]
         object_labels = df_objects.loc[image_id]["objects"]
 
         temp_object_labels = []
@@ -380,6 +445,8 @@ def save_dataset(image_dir, questions, annotations, raw_data_dir, ans2cat, outpu
         set_obj_labels.update(obj_cap_labels)
         d_caption_labels_from_object[q_index] = np.array(similar_cap_labels)
 
+        question = entry["question"]
+        answer = qid2ans[question_id]
         # related question tokens
         qa_token_string = question + " " + answer
         qa_tokens = list(set(tokenize(qa_token_string.lower().strip())))
@@ -401,12 +468,23 @@ def save_dataset(image_dir, questions, annotations, raw_data_dir, ans2cat, outpu
         d_questions[q_index] = question
         d_captions[q_index] = caption
 
-        answer = qid2ans[question_id]
+        d_answers[q_index] = answer
         d_answer_types[q_index] = int(ans2cat[answer])
         d_indices[q_index] = done_img2idx[image_id]
 
         truncated_image_features = df_caption_features.loc[image_id]["image_features"][:num_objects]
         d_object_features[q_index] = truncated_image_features
+
+        d_bottom_up_obj_features[q_index] = df_bottom_up.loc[image_id]["features"]
+        d_bottom_up_obj_locations[q_index] = df_bottom_up.loc[image_id]["boxes"]
+
+        img_bottom_up_object_labels = df_bottom_up.loc[image_id]["objects_id"]  # [36]
+        img_bottom_up_object_labels = [bottom_up_object_vocab_list[idx] for idx in img_bottom_up_object_labels]  # []
+        d_bottom_up_obj_labels[q_index] = img_bottom_up_object_labels
+
+        img_bottom_up_attr_labels = df_bottom_up.loc[image_id]["attrs_id"]  # [36]
+        img_bottom_up_attr_labels = [bottom_up_attributes_vocab_list[idx] for idx in img_bottom_up_attr_labels]  # []
+        d_bottom_up_attr_labels[q_index] = img_bottom_up_attr_labels
 
         q_index += 1
         # bar.update(q_index)
