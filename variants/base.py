@@ -1,9 +1,11 @@
+import copy
+from typing import Union
 from transformers.models.bert.tokenization_bert import BertTokenizer
 from layers import ImageTransformerEncoder
 import torch
 import torch.nn as nn
 from transformers.models.bert.configuration_bert import BertConfig
-from transformers.models.bert.modeling_bert import BertEmbeddings, BertLMHeadModel, BertModel
+from transformers.models.bert.modeling_bert import BertEmbeddings, BertLMHeadModel, BertModel, BertEncoder
 
 
 class BaseVQG(nn.Module):
@@ -22,8 +24,13 @@ class BaseVQG(nn.Module):
         self.tokenizer = tokenizer
         self.embeddings = BertEmbeddings(config)
 
-        self.text_encoder = BertModel.from_pretrained("bert-base-uncased", return_dict=True)
-        self.decoder = BertLMHeadModel.from_pretrained('bert-base-uncased', is_decoder=True, use_cache=True, add_cross_attention=True)
+        encoder_config = BertConfig.from_pretrained("bert-base-uncased", return_dict=True)
+        self.text_encoder = BertModel.from_pretrained("bert-base-uncased", config=encoder_config)
+
+        decoder_config = BertConfig.from_pretrained(
+            "bert-base-uncased", is_decoder=True, use_cache=True, add_cross_attention=True
+        )
+        self.decoder = BertLMHeadModel.from_pretrained('bert-base-uncased', config=decoder_config)
 
         # if object_features_variant:
         self.image_transformer = ImageTransformerEncoder(args)
@@ -31,6 +38,26 @@ class BaseVQG(nn.Module):
         self.positional_embed = True if positional_embed_variant else False
 
         self.latent_transformer = latent_transformer
+
+        if self.args.truncate:
+            print("TRUNCATING (BASE)")
+            self.text_encoder, src_config = self.truncate_model(self.text_encoder, encoder_config)
+            self.decoder, trg_config = self.truncate_model(self.decoder, decoder_config)
+
+    def truncate_model(self, model: Union[BertModel, BertLMHeadModel], config: BertConfig):
+        if config.is_decoder:
+            extracted_layers = [model.bert.encoder.layer[0], model.bert.encoder.layer[-1]]
+        else:
+            extracted_layers = [model.encoder.layer[0], model.encoder.layer[-1]]
+        config.num_hidden_layers = 2
+        new_model = copy.deepcopy(model)
+        new_encoder = BertEncoder(config)
+        new_encoder.layer = nn.ModuleList(extracted_layers)
+        if config.is_decoder:
+            new_model.bert.encoder = new_encoder
+        else:
+            new_model.encoder = new_encoder
+        return new_model, config
 
     def switch_latent_transformer(self, new_mode):
         self.latent_transformer = new_mode
@@ -98,11 +125,11 @@ class BaseVQG(nn.Module):
         # )  # [B, T, D]
         embedding = object_embeddings
         image_pos_id = torch.zeros(bsz, 1).long().to(self.args.device)
-        position_ids = torch.ones(bsz, 36).long().to(self.args.device)
+        position_ids = torch.ones(bsz, self.args.latent_dim).long().to(self.args.device)
         encoder_pos_ids = torch.cat((image_pos_id, position_ids), dim=1)
 
         image_pad_mask = torch.ones(bsz, 1).long().to(self.args.device)
-        input_attention_masks = torch.ones(bsz, 36).long().to(self.args.device)
+        input_attention_masks = torch.ones(bsz, self.args.latent_dim).long().to(self.args.device)
         encoder_attention_mask = torch.cat((image_pad_mask, input_attention_masks), dim=1)
 
         encoder_inputs = torch.cat((images, embedding), dim=1)
@@ -122,9 +149,9 @@ class BaseVQG(nn.Module):
 
     def encode_object_features(self, obj_features, obj_locations, encoder_hidden_states, encoder_attention_mask):
         bsz = obj_features.shape[0]
-        encoded_objects, _ = self.image_transformer(obj_features, obj_locations)  # [B, 36, D]
+        encoded_objects, _ = self.image_transformer(obj_features, obj_locations)  # [B, self.args.latent_dim, D]
         encoded_objects = encoded_objects.permute(1, 0, 2)
-        object_mask = torch.ones(bsz, 36).long().to(self.args.device)
+        object_mask = torch.ones(bsz, self.args.latent_dim).long().to(self.args.device)
         encoder_hidden_states = torch.cat((encoder_hidden_states, encoded_objects), dim=1)
         encoder_attention_mask = torch.cat((encoder_attention_mask, object_mask), dim=1)
 

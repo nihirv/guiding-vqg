@@ -1,4 +1,5 @@
 import argparse
+from distutils.util import strtobool
 import os
 
 import numpy as np
@@ -40,13 +41,15 @@ class TrainVQG(pl.LightningModule):
         self.msjs = []
         self.fbds = []
 
-        self.final_output = {"image_ids":[], "gts":[], "preds":[], "cat":[], "objs":[]}
+        self.final_output = {"image_ids": [], "gts": [], "preds": [], "cat": [], "objs": []}
 
         self.outputs_to_save = {"11111111111": [{"category": "object",
-                "objects": "man",
-                "generated_q": "what is the man doing?",
-                "real_q": "what is the man doing?",
-                "type": "implicit"}]}
+                                                 "objects": "man",
+                                                 "generated_q": "what is the man doing?",
+                                                 "real_q": "what is the man doing?",
+                                                 "type": "implicit"}]}
+
+        self.objs_to_index = self.args.latent_dim
 
     def forward(self, batch, val=False):
 
@@ -55,9 +58,9 @@ class TrainVQG(pl.LightningModule):
         question_attention_masks = batch["question_attention_masks"]
         qa_ids = batch["qa_ids"]
         qa_attention_masks = batch["qa_attention_masks"]
-        object_features = batch["object_features"]
-        object_locations = batch["object_locations"]
-        object_embeddings = batch["object_embeddings"]
+        object_features = batch["object_features"][:, :self.objs_to_index]
+        object_locations = batch["object_locations"][:, :self.objs_to_index]
+        object_embeddings = batch["object_embeddings"][:, :self.objs_to_index]
 
         input_ids = batch["question_ids"]
         input_attention_masks = batch["question_attention_masks"]
@@ -82,8 +85,7 @@ class TrainVQG(pl.LightningModule):
             #     input_ids = generative_ids
             #     input_attention_masks = generative_attention_masks
 
-
-        loss = self.model(images, question_ids, question_attention_masks, input_ids, input_attention_masks, object_features, object_locations)
+        loss = self.model(images, question_ids, question_attention_masks, input_ids, input_attention_masks, object_features, object_locations, object_embeddings, category_one_hot)
         return loss
 
     def calculate_losses(self, loss, kld, r=0.5):
@@ -93,21 +95,21 @@ class TrainVQG(pl.LightningModule):
             loss_kl = torch.tensor(0).to(self.args.device)
         else:
             self.kliter += 1
-            if "icod-icod-l,lg,lv,ckl":
-                cycle_num = (self.args.total_training_steps/4)
-                mod = self.kliter % cycle_num
-                temp = mod/cycle_num
-                beta = 1
-                if temp <= r:
-                    beta = 1/(1 + np.exp(-temp))
+            # if "icod-icod-l,lg,lv,ckl":
+            #     cycle_num = (self.args.total_training_steps/4)
+            #     mod = self.kliter % cycle_num
+            #     temp = mod/cycle_num
+            #     beta = 1
+            #     if temp <= r:
+            #         beta = 1/(1 + np.exp(-temp))
 
-                loss_kl = kld
-                total_loss = loss + beta * kld
-            if "icod-icod-l,lg,lv,akl":
-                kl_weight = min(math.tanh(6 * self.kliter /
-                                          self.args.full_kl_step - 3) + 1, 1)
-                loss_kl = self.args.kl_ceiling * kl_weight + kld
-                total_loss = loss_rec + loss_kl
+            #     loss_kl = kld
+            #     total_loss = loss + beta * kld
+            # if "icod-icod-l,lg,lv,akl":
+            kl_weight = min(math.tanh(6 * self.kliter /
+                                      self.args.full_kl_step - 3) + 1, 1)
+            loss_kl = self.args.kl_ceiling * kl_weight + kld
+            total_loss = loss_rec + loss_kl
 
         return total_loss, loss_rec, loss_kl
 
@@ -183,7 +185,7 @@ class TrainVQG(pl.LightningModule):
         #             self.final_output[k].append(item)
         #     else:
         #         self.final_output[k].extend(v)
-        
+
         # image_ids1 = self.final_output["image_ids"]
         # gts1 = self.final_output["gts"]
         # preds1 = self.final_output["preds"]
@@ -208,9 +210,9 @@ class TrainVQG(pl.LightningModule):
         images = batch["images"]
         image_ids = batch["image_ids"]
         question_ids = batch["question_ids"]
-        object_features = batch["object_features"]
-        object_locations = batch["object_locations"]
-        object_embeddings = batch["object_embeddings"]
+        object_features = batch["object_features"][:, :self.objs_to_index]
+        object_locations = batch["object_locations"][:, :self.objs_to_index]
+        object_embeddings = batch["object_embeddings"][:, :self.objs_to_index]
 
         inference_ids = batch["question_ids"]
         multiple_question_ids = batch["multiple_question_ids"]
@@ -251,13 +253,12 @@ class TrainVQG(pl.LightningModule):
         gts_multiple = []
         pred_objs = []
         pred_cat = []
-        # decoded_sentences, max_obj, max_cat = self.model.decode_greedy(images, input_ids, input_attention_masks, object_embeddings, object_features, object_locations, category_target=category_one_hot)
-        decoded_sentences = self.model.decode_greedy(images, input_ids, input_attention_masks, object_features, object_locations)
+        decoded_sentences, max_obj, max_cat = self.model.decode_greedy(images, input_ids, input_attention_masks, object_embeddings, object_features, object_locations, category_target=category_one_hot)
+        # decoded_sentences = self.model.decode_greedy(images, input_ids, input_attention_masks, object_features, object_locations)
         for i, sentence in enumerate(decoded_sentences):
             curr_input = self.filter_special_tokens(decoded_inputs[i])
             generated_q = self.filter_special_tokens(sentence)
             real_q = self.filter_special_tokens(decoded_questions[i])
-            
 
             multiple_real_q = [q.lower() for q in multiple_question_ids[i]]
             # print(multiple_real_q)
@@ -269,13 +270,13 @@ class TrainVQG(pl.LightningModule):
             preds.append(generated_q)
 
             image_id = str(image_ids[i])
-            # cat = cat2name[max_cat[i].data.item()]
-            # pred_cat.append(cat)
-            # objs = max_obj[i].data.tolist()
+            cat = cat2name[max_cat[i].data.item()]
+            pred_cat.append(cat)
+            objs = max_obj[i].data.tolist()
 
-            # obj_label = obj_labels[i]
-            # labels = list(set([obj_label[item] for item in objs]))[:2]
-            # pred_objs.append(labels)
+            obj_label = obj_labels[i]
+            labels = list(set([obj_label[item] for item in objs]))[:2]
+            pred_objs.append(labels)
 
             if i < print_lim:
                 print("Image ID:\t", image_id)
@@ -285,9 +286,9 @@ class TrainVQG(pl.LightningModule):
                 # else:
                 #     print("Caption:", " ".join(curr_input.split()))
 
-                # print("Pred Category:\t", cat)
-                # print("Pred Objects:\t", " ".join(labels))
-                # print(obj_label)
+                print("Pred Category:\t", cat)
+                print("Pred Objects:\t", " ".join(labels))
+                print("Obj Labels:\t", obj_label[:self.objs_to_index])
                 print("Generated:\t", generated_q)
                 print("Real Ques:\t", real_q)
                 print()
@@ -302,7 +303,7 @@ class TrainVQG(pl.LightningModule):
                 "real_q": real_q,
                 "type": "baseline"
             }
-            self.outputs_to_save[image_id].append(value_obj) 
+            self.outputs_to_save[image_id].append(value_obj)
 
         # print(len(preds))
         # print(len(gts))
@@ -325,7 +326,6 @@ class TrainVQG(pl.LightningModule):
         for k in msj_distance.keys():
             new_msj_distance["msj_{}".format(k)] = msj_distance[k]
         scores.update(new_msj_distance)
-
 
         # fbd = FBD(references=gts, model_name="bert-base-uncased", bert_model_dir="/homes/zw5018/.cache/huggingface/transformers/")
         # fbd_distance_sentences = fbd.get_score(sentences=preds)
@@ -356,8 +356,7 @@ class TrainVQG(pl.LightningModule):
 
         print("Model Variant:", self.args.variant)
 
-
-        final_dict = {"image_ids":[], "gts":[], "preds":[], "cat":[], "objs":[]}
+        final_dict = {"image_ids": [], "gts": [], "preds": [], "cat": [], "objs": []}
         # final_dict["image_ids"].extend(image_ids)
         # final_dict["gts"].extend(gts)
         # final_dict["preds"].extend(preds)
@@ -420,11 +419,13 @@ if __name__ == "__main__":
     parser.add_argument("--num_heads", type=int, default=8,
                         help="Number of heads in the multi-head attention")
     parser.add_argument("--max_decode_len", type=int, default=50, help="Maximum length decoded sequences are allowed to be")
-    parser.add_argument("--variant", type=str, default="icod-icod", help="Model variant to run.")
+    parser.add_argument("--variant", type=str, default="icod-icod-l,lg,lv,ckl", help="Model variant to run.")
     parser.add_argument("--dataset", type=str,
                         default="/data/nv419/VQG_DATA/processed/iq_dataset.hdf5")
     parser.add_argument("--val_dataset", type=str,
                         default="/data/nv419/VQG_DATA/processed/iq_val_dataset.hdf5")
+
+    parser.add_argument("--truncate", type=lambda x: bool(strtobool(x)), default=True)
 
     args = parser.parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -442,7 +443,7 @@ if __name__ == "__main__":
     print(trainVQG.final_output)
 
     trainer = pl.Trainer(max_steps=args.total_training_steps, gradient_clip_val=5,
-                         val_check_interval=500, limit_val_batches=350, callbacks=[early_stop_callback], gpus=1)
+                         val_check_interval=500, limit_val_batches=50, callbacks=[early_stop_callback], gpus=1)
 
     trainer.fit(trainVQG, data_loader, val_data_loader)
 
@@ -450,8 +451,9 @@ if __name__ == "__main__":
         os.getcwd(), args.val_dataset), tokenizer, args.batch_size, shuffle=False, num_workers=8)
     trainer.test(trainVQG, test_dataloaders=test_data_loader, ckpt_path="best")
 
-    for k, scores in trainVQG.test_scores.items():
-        print(k, np.mean(scores))
+    print([np.mean(x) * 100 for x in trainVQG.test_scores.values()])
+    # for k, scores in trainVQG.test_scores.items():
+    #     print(np.mean(scores))
 
     image_ids1 = trainVQG.final_output["image_ids"]
     gts1 = trainVQG.final_output["gts"]

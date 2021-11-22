@@ -6,47 +6,55 @@ import torch
 
 
 class Latent(nn.Module):
-    def __init__(self, args, rank3=False, dropout=0):
+    def __init__(self, args, category_or_objects="objects", dropout=0):
         super(Latent, self).__init__()
 
         self.args = args
+        if category_or_objects == "objects":
+            self.latent_dim = self.args.latent_dim
+            input_dim = self.args.latent_dim
+        elif category_or_objects == "category":
+            self.latent_dim = self.args.num_categories
+            input_dim = self.args.hidden_dim
 
         latent_layer_network_architecture = nn.Sequential(
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(args.latent_dim*2, args.latent_dim*2),
+            nn.Linear(input_dim*2, 256),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(args.latent_dim*2, args.latent_dim*2)
+            nn.Linear(256, self.latent_dim*2)
         )
 
         self.mean_logvar_prior = nn.Sequential(
-            nn.Linear(args.latent_dim, args.latent_dim*2),
+            nn.Linear(input_dim, input_dim*2),
             *copy.deepcopy(latent_layer_network_architecture)
 
         )
         self.mean_logvar_posterior = nn.Sequential(
-            nn.Linear(args.latent_dim, args.latent_dim*2),
+            nn.Linear(input_dim, input_dim*2),
             *copy.deepcopy(latent_layer_network_architecture)
         )
 
     def forward(self, x, x_p=None):
         mean_logvar_prior = self.mean_logvar_prior(x)
-        mean_prior, logvar_prior = mean_logvar_prior[:,:,:self.args.latent_dim], mean_logvar_prior[:,:,self.args.latent_dim:]
+        mean_prior, logvar_prior = mean_logvar_prior[:, :self.latent_dim], mean_logvar_prior[:, self.latent_dim:]
 
         eps = torch.randn(mean_prior.size()).to(self.args.device)
         std = torch.exp(0.5 * logvar_prior)
-        # z = eps * std + mean_prior
-        z = mean_prior
+        z = eps * std + mean_prior
+        # z = mean_prior
         kld_loss = 0
 
         mean_posterior, logvar_posterior = None, None
         if x_p is not None:  # if x_p IS None, then we're in inference mode.
             mean_logvar_posterior = self.mean_logvar_posterior(x_p)
-            mean_posterior, logvar_posterior = mean_logvar_posterior[:,:,:self.args.latent_dim], mean_logvar_posterior[:,:,self.args.latent_dim:]
+            mean_posterior, logvar_posterior = mean_logvar_posterior[:, :self.latent_dim], mean_logvar_posterior[:, self.latent_dim:]
 
-            for i in range(mean_posterior.size()[1]):
-                kld_loss += gaussian_kld(mean_posterior[:,i], logvar_posterior[:,i], mean_prior[:,i], logvar_prior[:,i])
+            # for i in range(mean_posterior.size()[1]):
+            #     kld_loss += gaussian_kld(mean_posterior[:, i], logvar_posterior[:, i], mean_prior[:, i], logvar_prior[:, i])
+            # kld_loss = torch.mean(kld_loss)
+            kld_loss += gaussian_kld(mean_posterior, logvar_posterior, mean_prior, logvar_prior)
             kld_loss = torch.mean(kld_loss)
 
             std = torch.exp(0.5 * logvar_posterior)

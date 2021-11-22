@@ -17,7 +17,7 @@ class VQGModel(nn.Module):
             from variants.icodf_icodf import icodf_icodf
             self.model = icodf_icodf(args, tokenizer, positional_embed_variant=True)
 
-        if args.variant in ("icod-icod-l,lg,lv,ckl", "icod-icod-l,lg,lv,akl"):
+        if args.variant in ("icod-icod-l", "icod-icod-l,lg,lv,ckl", "icod-icod-l,lg,lv,akl"):
             from variants.icod_icod_l import icod_icod_l
             self.model = icod_icod_l(args, tokenizer)
 
@@ -29,9 +29,9 @@ class VQGModel(nn.Module):
             from variants.if_if import if_if
             self.model = if_if(args, tokenizer)
 
-    def forward(self, images, question_ids, question_attention_masks, input_ids, input_attention_masks, obj_features, obj_locations):
-        loss, kld = self.model(images, question_ids, question_attention_masks, input_ids, input_attention_masks, obj_features, obj_locations)
+    def forward(self, images, question_ids, question_attention_masks, input_ids, input_attention_masks, obj_features, obj_locations, *args):
+        loss, kld = self.model(images, question_ids, question_attention_masks, input_ids, input_attention_masks, obj_features, obj_locations, *args)
         return loss, kld
 
-    def decode_greedy(self, images, input_ids, input_attention_masks, obj_features, obj_locations, category_target=None):
-        return self.model.decode_greedy(images, input_ids, input_attention_masks, obj_features, obj_locations)
+    def decode_greedy(self, images, input_ids, input_attention_masks, object_embeddings, obj_features, obj_locations, category_target=None):
+        return self.model.decode_greedy(images, input_ids, input_attention_masks, object_embeddings, obj_features, obj_locations, category_target)
